@@ -159,12 +159,3 @@ class AlarmManager:
 
         print("SentinelGuard: Alarm durduruldu!")
 
-
-if __name__ == "__main__":
-    alarm = AlarmManager()
-
-    try:
-        alarm.start_alarm()
-        input("Alarmi durdurmak icin Enter'a bas...")
-    finally:
-        alarm.stop_alarm()

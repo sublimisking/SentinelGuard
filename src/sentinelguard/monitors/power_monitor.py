@@ -1,60 +1,56 @@
-import time
-import winsound
 import psutil
 
 
-def get_power_state():
-    battery = psutil.sensors_battery()
+class PowerMonitor:
+    def __init__(self, security_manager):
+        self.security_manager = security_manager
+        self.previous_state = None
+        self.enabled = False
 
-    if battery is None:
-        return None
+    def get_power_state(self):
+        battery = psutil.sensors_battery()
 
-    return battery.power_plugged
+        if battery is None:
+            return None
 
-def alarm_sound():
-    try:
-        for _ in range(3):
-            winsound.Beep(1000, 500)
-            winsound.Beep(1800, 500)
-    except RuntimeError:
-        print("Sesli uyari oynatilamadi.")
+        return battery.power_plugged
 
-def monitor_power():
-    print("SentinelGuard - Power Monitor")
-    print("Sarj baglantisi izleniyor.")
-    print("Durdurmak icin Ctrl+C basin.\n")
+    def start_session(self):
+        # Koruma basladiginda sarj durumunu kaydet.
+        self.previous_state = self.get_power_state()
 
-    previous_state = get_power_state()
+        # Baslangicta sarj takiliysa bu sensoru etkinlestir.
+        self.enabled = self.previous_state is True
 
-    if previous_state is None:
-        print("Pil veya sarj bilgisi okunamadi.")
-        return
-    elif previous_state is False:
-        # Sarj kablosu ilk vakit takili degilse alarm yok.
-        print("Sarj kablosu zaten takili degildi. Burasi izlemiyor.")
-    else:
-         while True:
-                current_state = get_power_state()
-        
-                if previous_state is True and current_state is False:
-                    print("ALARM: Sarj kablosu cikarildi!")
-                    alarm_sound()
-        
-                elif previous_state is False and current_state is True:
-                    print("Sarj kablosu tekrar takildi.")
-        
-                elif previous_state is False and current_state is False:
-                    print("ALARM: Sarj kablosu hala takilmadi")
-                    alarm_sound()
-        
-                if current_state is not None:
-                    previous_state = current_state
-        
-                time.sleep(1)
-        
+        if self.enabled:
+            print("PowerMonitor: Sarj korumasi aktif.")
+        else:
+            print("PowerMonitor: Sarj korumasi devre disi.")
 
-if __name__ == "__main__":
-    try:
-        monitor_power()
-    except KeyboardInterrupt:
-        print("\nIzleme durduruldu.")
+    def check_power(self):
+        # Sarj korumasi kapaliysa kontrol etme.
+        if not self.enabled:
+            return
+
+        current_state = self.get_power_state()
+
+        # Batarya bilgisi okunamiyorsa o kontrolu atla.
+        if current_state is None:
+            return
+
+        # Sarj baglantisi yeni kesildiyse olay bildir.
+        if self.previous_state is True and current_state is False:
+            print("PowerMonitor: Sarj kablosu cikarildi!")
+
+            self.security_manager.handle_event(
+                "POWER_DISCONNECTED"
+            )
+
+        # Son okunan durumu sakla.
+        self.previous_state = current_state
+
+    def stop_session(self):
+        self.enabled = False
+        self.previous_state = None
+
+        print("PowerMonitor: Izleme durduruldu.")

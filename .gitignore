@@ -1,22 +1,36 @@
 
-# Python virtual environment
+# Python virtual environments
 .venv/
 venv/
+env/
 
 # Python cache
 __pycache__/
 *.py[cod]
+*$py.class
 
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
 
-# VS Code
+# VS Code settings
 .vscode/
 
-# Testing and build
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
 .ruff_cache/
+
+# Python packaging
 build/
 dist/
 *.egg-info/
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Local logs
+*.log

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelguard"
+version = "0.1.0"
+description = "A Windows laptop anti-theft security application"
+requires-python = ">=3.11"
+dependencies = [
+    "psutil>=7.0",
+    "pycaw",
+    "comtypes"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

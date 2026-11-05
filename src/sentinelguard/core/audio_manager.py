@@ -3,16 +3,30 @@ import os
 from pathlib import Path
 
 from pycaw.pycaw import AudioUtilities
-from pycaw.constants import EDataFlow, DEVICE_STATE
+from pycaw.constants import EDataFlow, DEVICE_STATE, ERole
 
 
 class AudioManager:
+
+    AUDIO_ROLES = (
+        ERole.eConsole,
+        ERole.eMultimedia,
+        ERole.eCommunications
+    )
+
     def __init__(self):
         self.settings_path = (
             Path(os.environ["LOCALAPPDATA"])
             / "SentinelGuard"
             / "settings.json"
         )
+
+        # Alarmdan onceki ses cikislarini saklayacak.
+        self.previous_outputs = None
+
+    # ------------------------------------
+    # SES CIHAZLARINI LISTELEME
+    # ------------------------------------
 
     def get_audio_outputs(self):
         return AudioUtilities.GetAllDevices(
@@ -35,6 +49,10 @@ class AudioManager:
 
         return devices
 
+    # ------------------------------------
+    # AYAR DOSYASINI OKUMA
+    # ------------------------------------
+
     def _read_settings(self):
         if not self.settings_path.exists():
             return {}
@@ -54,20 +72,21 @@ class AudioManager:
             print(f"Ayar dosyasi okunamadi: {error}")
             return {}
 
+    # ------------------------------------
+    # HOPARLOR SECIMINI KAYDETME
+    # ------------------------------------
+
     def save_speaker_selection(self, device_id):
         devices = self.get_audio_outputs()
 
-        # Secilen cihaz gercekten mevcut mu?
         if not any(device.id == device_id for device in devices):
             raise ValueError("Secilen ses cihazi bulunamadi.")
 
-        # Ayar klasorunu olustur.
         self.settings_path.parent.mkdir(
             parents=True,
             exist_ok=True
         )
 
-        # Mevcut ayarlari koru.
         settings = self._read_settings()
 
         if not isinstance(settings.get("audio"), dict):
@@ -75,7 +94,6 @@ class AudioManager:
 
         settings["audio"]["speaker_device_id"] = device_id
 
-        # Ayarlari dosyaya kaydet.
         with open(
             self.settings_path, "w", encoding="utf-8"
         ) as file:
@@ -83,9 +101,12 @@ class AudioManager:
 
         print("Hoparlor secimi basariyla kaydedildi.")
 
+    # ------------------------------------
+    # KAYITLI HOPARLORU YUKLEME
+    # ------------------------------------
+
     def load_speaker_selection(self):
         settings = self._read_settings()
-
         audio_settings = settings.get("audio", {})
 
         if not isinstance(audio_settings, dict):
@@ -96,7 +117,6 @@ class AudioManager:
         if not device_id:
             return None
 
-        # Kaydedilen cihaz hala mevcut mu?
         devices = self.get_audio_outputs()
 
         for device in devices:
@@ -110,39 +130,84 @@ class AudioManager:
         print("Kaydedilen hoparlor artik bulunamiyor.")
         return None
 
+    # ------------------------------------
+    # SECILEN HOPARLORE GECIS
+    # ------------------------------------
 
-if __name__ == "__main__":
-    audio_manager = AudioManager()
+    def switch_to_selected_speaker(self):
+        if self.previous_outputs is not None:
+            return
 
-    try:
-        saved_id = audio_manager.load_speaker_selection()
+        speaker_id = self.load_speaker_selection()
 
-        if saved_id is None:
-            devices = audio_manager.list_audio_outputs()
+        if speaker_id is None:
+            raise RuntimeError(
+                "Kayitli hoparlor bulunamadi."
+            )
 
-            if devices:
-                try:
-                    choice = int(
-                        input("Hoparlor numarasini sec: ")
-                    )
+        enumerator = AudioUtilities.GetDeviceEnumerator()
 
-                    if 1 <= choice <= len(devices):
-                        selected_device = devices[choice - 1]
+        # Eski cikislari once gecici olarak kaydet.
+        previous_outputs = {}
 
-                        audio_manager.save_speaker_selection(
-                            selected_device.id
-                        )
-                    else:
-                        print("Gecersiz secim.")
+        for role in self.AUDIO_ROLES:
+            current_device = enumerator.GetDefaultAudioEndpoint(
+                EDataFlow.eRender.value,
+                role.value
+            )
 
-                except ValueError:
-                    print("Lutfen gecerli bir numara gir.")
+            previous_outputs[role] = current_device.GetId()
 
-        else:
-            print("Hoparlor secimi zaten yapilmis.")
+        self.previous_outputs = previous_outputs
 
-    except KeyboardInterrupt:
-        print("\nIslem kullanici tarafindan iptal edildi.")
+        try:
+            # Windows'un varsayilan ses cikisini degistir.
+            AudioUtilities.SetDefaultDevice(
+                speaker_id,
+                roles=self.AUDIO_ROLES
+            )
 
-    except (OSError, ValueError, RuntimeError) as error:
-        print(f"AudioManager hatasi: {error}")
+            print("Ses cikisi secilen hoparlore degistirildi.")
+
+        except Exception:
+            # Gecis basarisizsa eski cikislara don.
+            try:
+                self.restore_previous_output()
+            except Exception as restore_error:
+                print(
+                    f"Ses cikisi kurtarma hatasi: {restore_error}"
+                )
+            raise
+
+    # ------------------------------------
+    # ESKI SES CIKISINA GERI DONUS
+    # ------------------------------------
+
+    def restore_previous_output(self):
+        if self.previous_outputs is None:
+            return
+
+        errors = []
+        remaining_outputs = {}
+
+        for role, device_id in self.previous_outputs.items():
+            try:
+                AudioUtilities.SetDefaultDevice(
+                    device_id,
+                    roles=[role]
+                )
+
+            except Exception as error:
+                errors.append(f"{role.name}: {error}")
+                remaining_outputs[role] = device_id
+
+        # Basarisiz donusleri tekrar deneyebilmek icin sakla.
+        self.previous_outputs = remaining_outputs or None
+
+        if errors:
+            raise RuntimeError(
+                "Bazi ses cikislari geri yuklenemedi: "
+                + "; ".join(errors)
+            )
+
+        print("Eski ses cikislari geri yuklendi.")

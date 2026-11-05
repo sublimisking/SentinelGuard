@@ -1,4 +1,3 @@
-
 class SecurityManager:
     # Alarm tetikleyebilen olay turleri
     ALARM_EVENTS = frozenset({

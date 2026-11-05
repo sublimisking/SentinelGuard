@@ -7,7 +7,8 @@ from pycaw.pycaw import AudioUtilities
 
 
 class AlarmManager:
-    def __init__(self):
+    def __init__(self, audio_manager):
+        self.audio_manager = audio_manager
         self.alarm_active = False
         self.stop_event = threading.Event()
         self.alarm_thread = None
@@ -32,118 +33,127 @@ class AlarmManager:
 
         print("SentinelGuard: Alarm baslatildi!")
 
+    
     def _play_alarm(self, stop_event):
-        speakers = None
-        volume = None
-        old_volume = None
-        old_mute = None
-        com_initialized = False
-
         sound_path = (
             Path(__file__).resolve().parents[3]
             / "assets"
             / "alarm.wav"
         )
 
+        volume = None
+        old_volume = None
+        old_mute = None
+        com_initialized = False
+
         try:
+            # Windows ses sistemini bu thread icin baslat.
+            comtypes.CoInitialize()
+            com_initialized = True
+
             if not sound_path.is_file():
                 raise FileNotFoundError(
                     f"Alarm dosyasi bulunamadi: {sound_path}"
                 )
 
-            try:
-                comtypes.CoInitialize()
-                com_initialized = True
+            # 1. Eski ses cikisini kaydet ve
+            # kullanicinin sectigi hoparlore gec.
+            self.audio_manager.switch_to_selected_speaker()
 
-                speakers = AudioUtilities.GetSpeakers()
-                volume = speakers.EndpointVolume
+            print("Alarm hoparlorune gecildi.")
 
-                # Baslangictaki ses ayarlarini kaydet.
-                old_volume = volume.GetMasterVolumeLevelScalar()
-                old_mute = volume.GetMute()
+            # Ses aygitinin degismesine kisa bir sure tanı.
+            if stop_event.wait(0.2):
+                return
 
-                print(f"Eski ses seviyesi: %{old_volume * 100:.0f}")
+            # 2. Yeni varsayilan hoparloru al.
+            speakers = AudioUtilities.GetSpeakers()
+            volume = speakers.EndpointVolume
 
-                if not stop_event.is_set():
-                    volume.SetMute(0, None)
-                    volume.SetMasterVolumeLevelScalar(1.0, None)
+            # 3. Hoparlorun onceki ses ayarlarini kaydet.
+            old_volume = volume.GetMasterVolumeLevelScalar()
+            old_mute = volume.GetMute()
 
-            except Exception as error:
-                print(f"Ses ayarlari degistirilemedi: {error}")
+            print(f"Eski hoparlor sesi: %{old_volume * 100:.0f}")
 
-            if not stop_event.is_set():
-                winsound.PlaySound(
-                    str(sound_path),
-                    winsound.SND_FILENAME
-                    | winsound.SND_ASYNC
-                    | winsound.SND_LOOP
-                    | winsound.SND_NODEFAULT
+            # 4. Sesi yukselt ve sessiz modu kapat.
+            volume.SetMute(0, None)
+            volume.SetMasterVolumeLevelScalar(0.003, None)
+
+            if stop_event.is_set():
+                return
+
+            # 5. Sireni baslat.
+            winsound.PlaySound(
+                str(sound_path),
+                winsound.SND_FILENAME
+                | winsound.SND_ASYNC
+                | winsound.SND_LOOP
+                | winsound.SND_NODEFAULT
+            )
+
+            print("SentinelGuard: Siren caliyor!")
+
+            # 6. Alarm aktifken sesi kontrol et.
+            while not stop_event.wait(0.2):
+
+                current_volume = (
+                    volume.GetMasterVolumeLevelScalar()
                 )
 
-                # Alarm aktifken ses seviyesini koru.
-                while not stop_event.wait(0.2):
-                    if volume is None:
-                        continue
+                current_mute = volume.GetMute()
 
-                    try:
-                        current_volume = (
-                            volume.GetMasterVolumeLevelScalar()
-                        )
-                        current_mute = volume.GetMute()
+                if current_mute:
+                    volume.SetMute(0, None)
 
-                        # Sessize alindiysa sessiz modu kapat.
-                        if current_mute:
-                            volume.SetMute(0, None)
+                if current_volume < 0.99:
+                    volume.SetMasterVolumeLevelScalar(
+                        1.0, None
+                    )
 
-                        # Ses dusurulduyse tekrar %100 yap.
-                        if current_volume < 0.99:
-                            volume.SetMasterVolumeLevelScalar(
-                                1.0, None
-                            )
-
-                    except Exception as error:
-                        print(f"Ses kontrol hatasi: {error}")
-                        # Siren devam etsin, denetim yapilamasin.
-                        stop_event.wait()
-                        break
-
-        except (RuntimeError, OSError) as error:
-            print(f"Alarm sesi oynatilamadi: {error}")
+        except Exception as error:
+            print(f"Alarm sistemi hatasi: {error}")
 
         finally:
-            # Once alarm sesini durdur.
+            # 7. Sireni durdur.
             try:
                 winsound.PlaySound(None, 0)
             except RuntimeError as error:
-                print(f"Alarm durdurulamadi: {error}")
+                print(f"Siren durdurulamadi: {error}")
 
-            # Eski ses ayarlarini geri yukle.
+            # 8. Hoparlorun eski ses seviyesini geri yukle.
             if volume is not None:
-                if old_volume is not None:
-                    try:
+                try:
+                    if old_volume is not None:
                         volume.SetMasterVolumeLevelScalar(
                             old_volume, None
                         )
-                    except Exception as error:
-                        print(f"Ses geri yuklenemedi: {error}")
 
-                if old_mute is not None:
-                    try:
+                    if old_mute is not None:
                         volume.SetMute(old_mute, None)
-                    except Exception as error:
-                        print(f"Sessiz mod geri yuklenemedi: {error}")
+
+                    print("Eski ses seviyesi geri yuklendi.")
+
+                except Exception as error:
+                    print(f"Ses geri yuklenemedi: {error}")
+
+            # 9. Eski ses cikisina geri don.
+            try:
+                self.audio_manager.restore_previous_output()
+            except Exception as error:
+                print(f"Ses cikisi geri yuklenemedi: {error}")
 
             volume = None
-            speakers = None
 
             if com_initialized:
                 comtypes.CoUninitialize()
 
+            # 10. Alarm durumunu sifirla.
             with self._lock:
                 if self.stop_event is stop_event:
                     self.alarm_active = False
 
-            print("Alarm islemi tamamlandi.")
+            print("SentinelGuard: Alarm islemi tamamlandi.")
 
     def stop_alarm(self):
         with self._lock:

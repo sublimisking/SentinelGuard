@@ -3,6 +3,7 @@ class SecurityManager:
     ALARM_EVENTS = frozenset({
     "POWER_DISCONNECTED",
     "USB_CONNECTED",
+    "USB_DISCONNECTED",
     "INPUT_DETECTED",
     "MOTION_DETECTED",
     "PERSON_DETECTED"

@@ -78,7 +78,7 @@ class AlarmManager:
 
             # 4. Sesi yukselt ve sessiz modu kapat.
             volume.SetMute(0, None)
-            volume.SetMasterVolumeLevelScalar(0.003, None)
+            volume.SetMasterVolumeLevelScalar(1.0, None)
 
             if stop_event.is_set():
                 return
@@ -168,4 +168,3 @@ class AlarmManager:
             thread.join()
 
         print("SentinelGuard: Alarm durduruldu!")
-

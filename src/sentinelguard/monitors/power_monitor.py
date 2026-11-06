@@ -54,3 +54,4 @@ class PowerMonitor:
         self.previous_state = None
 
         print("PowerMonitor: Izleme durduruldu.")
+ 

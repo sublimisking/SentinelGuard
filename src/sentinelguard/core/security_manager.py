@@ -1,43 +1,120 @@
-class SecurityManager:
-    # Alarm tetikleyebilen olay turleri
-    ALARM_EVENTS = frozenset({
-    "POWER_DISCONNECTED",
-    "USB_CONNECTED",
-    "USB_DISCONNECTED",
-    "INPUT_DETECTED",
-    "MOTION_DETECTED",
-    "PERSON_DETECTED"
-})
+import time
 
-    def __init__(self, alarm_manager):
-        self.is_armed = False
+
+class SecurityManager:
+
+    PIN_TIMEOUT_SECONDS = 10.0
+
+    ALARM_EVENTS = frozenset({
+        "POWER_DISCONNECTED",
+        "USB_CONNECTED",
+        "USB_DISCONNECTED",
+        "INPUT_DETECTED",
+        "MOTION_DETECTED",
+        "PERSON_DETECTED",
+    })
+
+    def __init__(
+        self,
+        alarm_manager,
+        pin_verifier=None,
+        clock=None
+    ):
         self.alarm_manager = alarm_manager
+        self.pin_verifier = pin_verifier
+        self.clock = clock if clock is not None else time.monotonic
+
+        self.is_armed = False
+        self.pin_deadline = None
+        self.pin_timeout_triggered = False
 
     def arm(self):
+
         if self.is_armed:
             return
 
         self.is_armed = True
+        self.pin_deadline = None
+        self.pin_timeout_triggered = False
+
         print("SentinelGuard koruma modu aktif.")
 
     def disarm(self):
+
         if not self.is_armed:
             return
 
-        self.alarm_manager.stop_alarm()
         self.is_armed = False
+        self.pin_deadline = None
+        self.pin_timeout_triggered = False
+
+        self.alarm_manager.stop_alarm()
 
         print("SentinelGuard koruma modu kapatildi.")
 
     def handle_event(self, event_type: str) -> bool:
+
         if not self.is_armed:
             return False
 
         if event_type not in self.ALARM_EVENTS:
-            print(f"Taninmayan veya izin verilmeyen olay: {event_type}")
+            print(f"Taninmayan olay: {event_type}")
             return False
 
-        print(f"Guvenlik olayi algilandi: {event_type}")
+        # Klavye/fare icin PIN suresi baslat.
+        if event_type == "INPUT_DETECTED":
+
+            if self.pin_deadline is not None:
+                return False
+
+            self.pin_deadline = (
+                self.clock() + self.PIN_TIMEOUT_SECONDS
+            )
+
+            print("Giris algilandi. PIN icin 10 saniye.")
+            return True
+
+        # Diger guvenlik olaylari aninda alarm verir.
+        self.alarm_manager.start_alarm()
+        return True
+
+    def check_pin_timeout(self) -> bool:
+
+        if not self.is_armed:
+            return False
+
+        if self.pin_deadline is None:
+            return False
+
+        if self.pin_timeout_triggered:
+            return False
+
+        if self.clock() < self.pin_deadline:
+            return False
+
+        self.pin_timeout_triggered = True
         self.alarm_manager.start_alarm()
 
+        print("PIN suresi doldu!")
+        return True
+
+    def submit_pin(self, pin: str) -> bool:
+
+        if not self.is_armed:
+            return False
+
+        if self.pin_deadline is None:
+            return False
+
+        if self.pin_verifier is None:
+            return False
+
+        # Gecikmis PIN girisi sure asimini atlatamasin.
+        self.check_pin_timeout()
+
+        if not self.pin_verifier(pin):
+            print("Yanlis PIN.")
+            return False
+
+        self.disarm()
         return True

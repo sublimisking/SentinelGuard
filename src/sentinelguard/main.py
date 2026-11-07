@@ -8,30 +8,102 @@ from sentinelguard.monitors.power_monitor import PowerMonitor
 from sentinelguard.monitors.usb_monitor import USBMonitor
 
 
+def ensure_alarm_speaker(audio_manager):
+    """
+    Kayıtlı alarm hoparlörünü kontrol eder.
+    Geçerli bir seçim yoksa kullanıcıya hoparlör seçtirir.
+    """
+
+    # 1. Kayıtlı hoparlör var mı?
+    saved_id = audio_manager.load_speaker_selection()
+
+    if saved_id is not None:
+        print("Alarm hoparloru hazir.")
+        return
+
+    # 2. Kayıt yoksa veya cihaz bulunamıyorsa
+    print("\nAlarm hoparloru ayarlanmamis.")
+    print("Lutfen alarm icin kullanilacak hoparloru sec.")
+
+    devices = audio_manager.list_audio_outputs()
+
+    if not devices:
+        raise RuntimeError(
+            "Kullanilabilir ses cikisi bulunamadi. "
+            "Koruma baslatilamiyor."
+        )
+
+    # 3. Geçerli seçim yapılana kadar sor
+    while True:
+        choice = input(
+            "Hoparlor numarasini gir (q: iptal): "
+        ).strip()
+
+        if choice.lower() == "q":
+            raise RuntimeError(
+                "Hoparlor secimi iptal edildi. "
+                "Koruma baslatilmadi."
+            )
+
+        try:
+            index = int(choice) - 1
+        except ValueError:
+            print("Lutfen bir numara gir.")
+            continue
+
+        if not 0 <= index < len(devices):
+            print("Gecersiz hoparlor numarasi.")
+            continue
+
+        selected_device = devices[index]
+
+        # 4. Seçimi settings.json dosyasına kaydet
+        audio_manager.save_speaker_selection(
+            selected_device.id
+        )
+
+        print(
+            f"Alarm hoparloru secildi: "
+            f"{selected_device.FriendlyName}"
+        )
+
+        return
+
+
 def main():
 
-    # 1. Ses sistemi
+    # Ses sistemi
     audio_manager = AudioManager()
     alarm_manager = AlarmManager(audio_manager)
 
-    # 2. Guvenlik sistemi
+    # Güvenlik sistemi
     security_manager = SecurityManager(alarm_manager)
 
-    # 3. Sensorler
+    # Sensörler
     power_monitor = PowerMonitor(security_manager)
     usb_monitor = USBMonitor(security_manager)
+
+    power_started = False
+    usb_started = False
 
     print("SentinelGuard baslatildi.")
 
     try:
+        # ONEMLI: Koruma acilmadan once hoparloru kontrol et.
+        ensure_alarm_speaker(audio_manager)
+
         input(
-            "Korumayi etkinlestirmek icin Enter'a bas..."
+            "\nKorumayi etkinlestirmek icin Enter'a bas..."
         )
 
+        # Koruma modunu etkinleştir
         security_manager.arm()
 
         power_monitor.start_session()
+        power_started = True
+
         usb_monitor.start_session()
+        usb_started = True
 
         print("\nSentinelGuard koruma modu aktif!")
         print("Sarj ve USB olaylari izleniyor.")
@@ -41,30 +113,36 @@ def main():
 
         while True:
 
-            # USB olaylarini Windows'tan al.
+            # USB olaylarini Windows'tan al
             usb_monitor.process_events()
 
-            # Sarj durumunu 0.5 saniyede bir kontrol et.
+            # Sarj durumunu kontrol et
             now = time.monotonic()
 
             if now >= next_power_check:
                 power_monitor.check_power()
-
                 next_power_check = (
                     time.monotonic() + 0.5
                 )
 
-            # Mesaj dongusunun CPU'yu mesgul
-            # etmesini engelle.
             time.sleep(0.02)
 
     except KeyboardInterrupt:
         print("\nSentinelGuard kapatiliyor...")
 
-    finally:
+    except EOFError:
+        print("\nKullanici girdisi alinamadi.")
 
-        usb_monitor.stop_session()
-        power_monitor.stop_session()
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"SentinelGuard hatasi: {error}")
+
+    finally:
+        if usb_started:
+            usb_monitor.stop_session()
+
+        if power_started:
+            power_monitor.stop_session()
+
         security_manager.disarm()
 
         print("SentinelGuard kapatildi.")

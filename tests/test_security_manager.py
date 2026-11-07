@@ -150,24 +150,34 @@ def test_rearm_after_disarm():
     assert fake_alarm.start_count == 2
     assert fake_alarm.stop_count == 1
 
-def test_all_valid_events_types():
 
-    events = (
-        "POWER_DISCONNECTED",
-        "USB_CONNECTED",
-        "INPUT_DETECTED",
-        "MOTION_DETECTED",
-        "PERSON_DETECTED"
-    )
+import pytest
 
-    for event in events:
 
-        fake_alarm = FakeAlarmManager()
-        security = SecurityManager(fake_alarm)
+@pytest.mark.parametrize("event_type", [
+    "POWER_DISCONNECTED",
+    "USB_CONNECTED",
+    "USB_DISCONNECTED",
+    "INPUT_DETECTED",
+    "MOTION_DETECTED",
+    "PERSON_DETECTED",
+])
+def test_all_valid_events_types(event_type):
 
-        security.arm()
-        result = security.handle_event(event)
+    alarm = FakeAlarmManager()
+    security = SecurityManager(alarm)
 
-        assert result is True
-        assert fake_alarm.start_count == 1
+    security.arm()
 
+    result = security.handle_event(event_type)
+
+    assert result is True
+
+    if event_type == "INPUT_DETECTED":
+        # Klavye/fare: alarm degil, PIN sayaci baslar.
+        assert alarm.start_count == 0
+        assert security.pin_deadline is not None
+
+    else:
+        # Diger olaylar aninda alarm baslatir.
+        assert alarm.start_count == 1

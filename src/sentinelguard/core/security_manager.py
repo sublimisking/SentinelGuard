@@ -98,23 +98,27 @@ class SecurityManager:
         print("PIN suresi doldu!")
         return True
 
+    
     def submit_pin(self, pin: str) -> bool:
 
+        # Koruma aktif degilse PIN dogrulama yapma.
         if not self.is_armed:
             return False
 
-        if self.pin_deadline is None:
-            return False
-
+        # PIN dogrulama sistemi bagli olmali.
         if self.pin_verifier is None:
             return False
 
-        # Gecikmis PIN girisi sure asimini atlatamasin.
+        # Bekleme suresi dolduysa once bunu isle.
         self.check_pin_timeout()
 
+        # Gercek PIN kaydiyla dogrula.
         if not self.pin_verifier(pin):
             print("Yanlis PIN.")
             return False
 
+        # PIN dogruysa korumayi kapat.
         self.disarm()
+
         return True
+

@@ -1,151 +1,623 @@
+
 import time
+
+import customtkinter as ctk
+from tkinter import messagebox
 
 from sentinelguard.core.audio_manager import AudioManager
 from sentinelguard.core.alarm_manager import AlarmManager
 from sentinelguard.core.security_manager import SecurityManager
+from sentinelguard.core.pin_manager import (
+    PinManager,
+    PinStorageError
+)
 
 from sentinelguard.monitors.power_monitor import PowerMonitor
 from sentinelguard.monitors.usb_monitor import USBMonitor
+from sentinelguard.monitors.input_monitor import InputMonitor
+
+from sentinelguard.ui.theme import (
+    configure_theme,
+    center_window
+)
+
+from sentinelguard.ui.main_dashboard import MainDashboard
+from sentinelguard.ui.pin_setup_window import PinSetupWindow
+from sentinelguard.ui.pin_window import PinWindow
+from sentinelguard.ui.audio_settings_window import AudioSettingsWindow
 
 
-def ensure_alarm_speaker(audio_manager):
+# ==================================================
+# ILK KURULUM - SES CIKISI
+# ==================================================
+
+def ensure_alarm_speaker(root, audio_manager):
     """
-    Kayıtlı alarm hoparlörünü kontrol eder.
-    Geçerli bir seçim yoksa kullanıcıya hoparlör seçtirir.
+    Kayitli hoparlor yoksa grafik arayuzlu
+    ses ayarlari penceresini acar.
     """
 
-    # 1. Kayıtlı hoparlör var mı?
-    saved_id = audio_manager.load_speaker_selection()
+    saved_speaker = audio_manager.load_speaker_selection()
 
-    if saved_id is not None:
-        print("Alarm hoparloru hazir.")
-        return
+    if saved_speaker is not None:
+        return True
 
-    # 2. Kayıt yoksa veya cihaz bulunamıyorsa
-    print("\nAlarm hoparloru ayarlanmamis.")
-    print("Lutfen alarm icin kullanilacak hoparloru sec.")
+    dialog = AudioSettingsWindow(
+        root,
+        audio_manager,
+        required=True
+    )
 
-    devices = audio_manager.list_audio_outputs()
+    root.wait_window(dialog)
 
-    if not devices:
-        raise RuntimeError(
-            "Kullanilabilir ses cikisi bulunamadi. "
-            "Koruma baslatilamiyor."
+    return (
+        audio_manager.load_speaker_selection()
+        is not None
+    )
+
+
+# ==================================================
+# ILK KURULUM - PIN
+# ==================================================
+
+def ensure_pin_configured(root, pin_manager):
+    """
+    PIN yoksa olusturma penceresini acar.
+    PIN varsa kaydin okunabilirligini kontrol eder.
+    """
+
+    if pin_manager.has_pin():
+        pin_manager.verify_pin("000000")
+        return True
+
+    dialog = PinSetupWindow(
+        root,
+        pin_manager
+    )
+
+    root.wait_window(dialog)
+
+    return dialog.created
+
+
+# ==================================================
+# GUVENLIK OLAY YONLENDIRICISI
+# ==================================================
+
+class SecurityEventRouter:
+    """
+    Sensorlerden gelen olaylari SecurityManager'a
+    iletir ve kabul edilen olaylarda PIN ekranini acar.
+    """
+
+    def __init__(self, security_manager, on_event):
+        self.security_manager = security_manager
+        self.on_event = on_event
+
+    def handle_event(self, event_type):
+
+        accepted = self.security_manager.handle_event(
+            event_type
         )
 
-    # 3. Geçerli seçim yapılana kadar sor
-    while True:
-        choice = input(
-            "Hoparlor numarasini gir (q: iptal): "
-        ).strip()
+        if accepted:
+            self.on_event()
 
-        if choice.lower() == "q":
-            raise RuntimeError(
-                "Hoparlor secimi iptal edildi. "
-                "Koruma baslatilmadi."
-            )
+        return accepted
+
+
+# ==================================================
+# SENTINELGUARD UYGULAMASI
+# ==================================================
+
+class SentinelGuardApp:
+
+    def __init__(self, root, audio_manager, pin_manager):
+
+        self.root = root
+        self.audio_manager = audio_manager
+        self.pin_manager = pin_manager
+
+        # Acik ses ayarlari penceresini takip eder.
+        self.audio_window = None
+
+        # Uygulama durumu
+        self.arming_after_id = None
+        self.next_power_check = 0.0
+        self.monitor_fault = False
+        self.closed = False
+
+        # ------------------------------------------
+        # GUVENLIK MODULLERI
+        # ------------------------------------------
+
+        self.alarm_manager = AlarmManager(
+            audio_manager
+        )
+
+        self.security_manager = SecurityManager(
+            self.alarm_manager,
+            pin_verifier=pin_manager.verify_pin
+        )
+
+        # ------------------------------------------
+        # PIN KILIT EKRANI
+        # ------------------------------------------
+
+        self.pin_window = PinWindow(
+            root,
+            self.security_manager,
+            on_disarmed=self.on_disarmed
+        )
+
+        # ------------------------------------------
+        # GUVENLIK OLAY YONLENDIRICISI
+        # ------------------------------------------
+
+        self.event_router = SecurityEventRouter(
+            self.security_manager,
+            self.show_pin_window
+        )
+
+        # ------------------------------------------
+        # SENSORLER
+        # ------------------------------------------
+
+        self.power_monitor = PowerMonitor(
+            self.event_router
+        )
+
+        self.usb_monitor = USBMonitor(
+            self.event_router
+        )
+
+        self.input_monitor = InputMonitor(
+            self.event_router
+        )
+
+        # ------------------------------------------
+        # ANA ARAYUZ
+        # ------------------------------------------
+
+        self.dashboard = MainDashboard(
+            root,
+            on_arm=self.prepare_arm,
+            on_audio_settings=self.open_audio_settings
+        )
+
+        self.status_var = self.dashboard.status_var
+        self.arm_button = self.dashboard.arm_button
+
+        # ------------------------------------------
+        # PENCERE KAPATMA
+        # ------------------------------------------
+
+        root.protocol(
+            "WM_DELETE_WINDOW",
+            self.close
+        )
+
+        # ------------------------------------------
+        # SENSOR KONTROL DONGUSU
+        # ------------------------------------------
+
+        root.after(
+            50,
+            self.tick
+        )
+
+    # ==================================================
+    # SES AYARLARI PENCERESI
+    # ==================================================
+
+    def open_audio_settings(self):
+
+        # Koruma aktifken ses ayarlari degistirilmesin.
+        if self.security_manager.is_armed:
+            return
+
+        # Koruma baslatma geri sayimi devam ediyorsa acma.
+        if self.arming_after_id is not None:
+            return
+
+        # Pencere zaten aciksa yeniden olusturma.
+        if (
+            self.audio_window is not None
+            and self.audio_window.winfo_exists()
+        ):
+            self.audio_window.lift()
+            self.audio_window.focus_set()
+            return
 
         try:
-            index = int(choice) - 1
-        except ValueError:
-            print("Lutfen bir numara gir.")
-            continue
+            self.audio_window = AudioSettingsWindow(
+                self.root,
+                self.audio_manager,
+                required=False
+            )
 
-        if not 0 <= index < len(devices):
-            print("Gecersiz hoparlor numarasi.")
-            continue
+        except Exception as error:
+            messagebox.showerror(
+                "Ses Ayarlari Hatasi",
+                str(error),
+                parent=self.root
+            )
 
-        selected_device = devices[index]
+    # ==================================================
+    # KORUMAYI ETKINLESTIRMEYE HAZIRLIK
+    # ==================================================
 
-        # 4. Seçimi settings.json dosyasına kaydet
-        audio_manager.save_speaker_selection(
-            selected_device.id
+    def prepare_arm(self):
+
+        if self.security_manager.is_armed:
+            return
+
+        if self.arming_after_id is not None:
+            return
+
+        # Ses ayarlari penceresi aciksa korumayi baslatma.
+        if (
+            self.audio_window is not None
+            and self.audio_window.winfo_exists()
+        ):
+            return
+
+        # Kayitli hoparlor halen kullanilabilir olmali.
+        if self.audio_manager.load_speaker_selection() is None:
+            self.status_var.set(
+                "Once alarm hoparlorunu secmelisiniz."
+            )
+            self.open_audio_settings()
+            return
+
+        self.arm_button.configure(
+            state="disabled"
         )
 
-        print(
-            f"Alarm hoparloru secildi: "
-            f"{selected_device.FriendlyName}"
+        self.status_var.set(
+            "3 saniye sonra koruma baslayacak."
         )
 
-        return
+        self.arming_after_id = self.root.after(
+            3000,
+            self.activate_protection
+        )
 
+    # ==================================================
+    # KORUMAYI ETKINLESTIR
+    # ==================================================
+
+    def activate_protection(self):
+
+        self.arming_after_id = None
+        self.monitor_fault = False
+
+        try:
+            # Once guvenlik yoneticisini etkinlestir.
+            self.security_manager.arm()
+
+            # Ardindan sensorleri baslat.
+            self.power_monitor.start_session()
+            self.usb_monitor.start_session()
+            self.input_monitor.start_session()
+
+        except Exception as error:
+
+            self.stop_monitors()
+
+            self.security_manager.disarm()
+
+            self.arm_button.configure(
+                state="normal"
+            )
+
+            self.status_var.set(
+                f"Koruma baslatilamadi: {error}"
+            )
+
+            print(f"Koruma baslatma hatasi: {error}")
+
+            return
+
+        self.next_power_check = time.monotonic()
+
+        self.status_var.set(
+            "Koruma aktif."
+        )
+
+        print("SentinelGuard koruma modu aktif.")
+
+        # Koruma basladiginda ana pencereyi gizle.
+        self.root.withdraw()
+
+    # ==================================================
+    # PIN EKRANINI GOSTER
+    # ==================================================
+
+    def show_pin_window(self):
+
+        if not self.security_manager.is_armed:
+            return
+
+        if not self.pin_window.is_visible:
+            self.pin_window.show()
+
+    # ==================================================
+    # ANA SENSOR KONTROL DONGUSU
+    # ==================================================
+
+    def tick(self):
+
+        if self.closed:
+            return
+
+        try:
+
+            if self.security_manager.is_armed:
+
+                # USB olaylarini isle.
+                self.usb_monitor.process_events()
+
+                now = time.monotonic()
+
+                # Sarj durumunu 0.5 saniyede bir kontrol et.
+                if now >= self.next_power_check:
+
+                    self.power_monitor.check_power()
+
+                    self.next_power_check = (
+                        time.monotonic() + 0.5
+                    )
+
+                # Klavye ve fare hareketlerini kontrol et.
+                self.input_monitor.check_input()
+
+                # PIN geri sayimi doldu mu?
+                self.security_manager.check_pin_timeout()
+
+        except Exception as error:
+
+            if not self.monitor_fault:
+
+                self.monitor_fault = True
+
+                print(
+                    f"SentinelGuard izleme hatasi: {error}"
+                )
+
+                # Sensor arizasi sessizce gecilmesin.
+                self.alarm_manager.start_alarm()
+
+                self.show_pin_window()
+
+        finally:
+
+            if not self.closed:
+
+                self.root.after(
+                    50,
+                    self.tick
+                )
+
+    # ==================================================
+    # SENSORLERI DURDUR
+    # ==================================================
+
+    def stop_monitors(self):
+
+        monitors = (
+            self.input_monitor,
+            self.usb_monitor,
+            self.power_monitor
+        )
+
+        for monitor in monitors:
+
+            try:
+                monitor.stop_session()
+
+            except Exception as error:
+                print(
+                    f"Monitor durdurma hatasi: {error}"
+                )
+
+    # ==================================================
+    # KORUMA KAPATILINCA
+    # ==================================================
+
+    def on_disarmed(self):
+
+        self.stop_monitors()
+
+        self.monitor_fault = False
+
+        self.status_var.set(
+            "Koruma kapali."
+        )
+
+        self.arm_button.configure(
+            state="normal"
+        )
+
+        # Ana pencereyi geri goster.
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    # ==================================================
+    # UYGULAMAYI KAPAT
+    # ==================================================
+
+    def close(self):
+
+        if self.closed:
+            return
+
+        # Koruma aktifken PIN olmadan normal
+        # pencere kapatma islemi yapilmasin.
+        if self.security_manager.is_armed:
+
+            if self.security_manager.pin_deadline is None:
+                self.event_router.handle_event(
+                    "INPUT_DETECTED"
+                )
+
+            self.show_pin_window()
+            return
+
+        # Koruma baslatma geri sayimini iptal et.
+        if self.arming_after_id is not None:
+
+            self.root.after_cancel(
+                self.arming_after_id
+            )
+
+            self.arming_after_id = None
+
+        self.closed = True
+
+        self.stop_monitors()
+
+        # Ses ayarlari penceresi aciksa kapat.
+        if (
+            self.audio_window is not None
+            and self.audio_window.winfo_exists()
+        ):
+            self.audio_window.destroy()
+
+        self.pin_window.destroy()
+
+        self.root.destroy()
+
+
+# ==================================================
+# UYGULAMA BASLANGICI
+# ==================================================
 
 def main():
 
-    # Ses sistemi
-    audio_manager = AudioManager()
-    alarm_manager = AlarmManager(audio_manager)
+    # ------------------------------------------
+    # TEMAYI AYARLA
+    # ------------------------------------------
 
-    # Güvenlik sistemi
-    security_manager = SecurityManager(alarm_manager)
+    configure_theme()
 
-    # Sensörler
-    power_monitor = PowerMonitor(security_manager)
-    usb_monitor = USBMonitor(security_manager)
+    # ------------------------------------------
+    # ANA PENCEREYI OLUSTUR
+    # ------------------------------------------
 
-    power_started = False
-    usb_started = False
+    root = ctk.CTk()
 
-    print("SentinelGuard baslatildi.")
+    root.title("SentinelGuard")
+
+    root.configure(
+        fg_color="#0B1220"
+    )
+
+    root.resizable(
+        False,
+        False
+    )
+
+    # Ekranin ortasinda ac.
+    center_window(
+        root,
+        760,
+        550
+    )
+
+    # ------------------------------------------
+    # ILK KURULUM BILGISI
+    # ------------------------------------------
+
+    setup_label = ctk.CTkLabel(
+        root,
+        text=(
+            "SentinelGuard\n"
+            "Güvenlik sistemi hazırlanıyor..."
+        ),
+        font=ctk.CTkFont(
+            size=23,
+            weight="bold"
+        ),
+        text_color="#F8FAFC"
+    )
+
+    setup_label.pack(
+        expand=True
+    )
+
+    # ------------------------------------------
+    # TEMEL MODULLERI OLUSTUR
+    # ------------------------------------------
 
     try:
-        # ONEMLI: Koruma acilmadan once hoparloru kontrol et.
-        ensure_alarm_speaker(audio_manager)
 
-        input(
-            "\nKorumayi etkinlestirmek icin Enter'a bas..."
+        audio_manager = AudioManager()
+        pin_manager = PinManager()
+
+        # --------------------------------------
+        # SES CIKISI KONTROLU
+        # --------------------------------------
+
+        if not ensure_alarm_speaker(
+            root,
+            audio_manager
+        ):
+            root.destroy()
+            return
+
+        # --------------------------------------
+        # PIN KURULUMU
+        # --------------------------------------
+
+        if not ensure_pin_configured(
+            root,
+            pin_manager
+        ):
+            root.destroy()
+            return
+
+    except (
+        PinStorageError,
+        OSError,
+        RuntimeError,
+        ValueError
+    ) as error:
+
+        messagebox.showerror(
+            "SentinelGuard Hatasi",
+            str(error),
+            parent=root
         )
 
-        # Koruma modunu etkinleştir
-        security_manager.arm()
+        root.destroy()
+        return
 
-        power_monitor.start_session()
-        power_started = True
+    # ------------------------------------------
+    # KURULUM TAMAMLANDI
+    # ------------------------------------------
 
-        usb_monitor.start_session()
-        usb_started = True
+    setup_label.destroy()
 
-        print("\nSentinelGuard koruma modu aktif!")
-        print("Sarj ve USB olaylari izleniyor.")
-        print("Cikmak icin Ctrl+C.")
+    # ------------------------------------------
+    # ANA UYGULAMAYI BASLAT
+    # ------------------------------------------
 
-        next_power_check = time.monotonic()
+    app = SentinelGuardApp(
+        root,
+        audio_manager,
+        pin_manager
+    )
 
-        while True:
+    root.deiconify()
+    root.lift()
 
-            # USB olaylarini Windows'tan al
-            usb_monitor.process_events()
+    # ------------------------------------------
+    # TKINTER OLAY DONGUSU
+    # ------------------------------------------
 
-            # Sarj durumunu kontrol et
-            now = time.monotonic()
-
-            if now >= next_power_check:
-                power_monitor.check_power()
-                next_power_check = (
-                    time.monotonic() + 0.5
-                )
-
-            time.sleep(0.02)
-
-    except KeyboardInterrupt:
-        print("\nSentinelGuard kapatiliyor...")
-
-    except EOFError:
-        print("\nKullanici girdisi alinamadi.")
-
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"SentinelGuard hatasi: {error}")
-
-    finally:
-        if usb_started:
-            usb_monitor.stop_session()
-
-        if power_started:
-            power_monitor.stop_session()
-
-        security_manager.disarm()
-
-        print("SentinelGuard kapatildi.")
+    root.mainloop()
 
 
 if __name__ == "__main__":

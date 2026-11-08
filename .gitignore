@@ -34,3 +34,17 @@ Thumbs.db
 
 # Local logs
 *.log
+
+# Windows installer and release files
+release/
+*.exe
+
+# Local security data
+pin.json
+settings.json
+*.db
+*.db-shm
+*.db-wal
+
+# Optional PyInstaller specification
+*.spec

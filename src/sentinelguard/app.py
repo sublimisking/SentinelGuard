@@ -1,7 +1,14 @@
+"""SentinelGuard uygulama denetleyicisi.
+
+Arayuz (MainWindow) ve sensor / guvenlik modulleri arasindaki baglantiyi
+burada kuruyoruz. Gercek Windows kilit ekrani saglamaz.
+"""
+
 import time
 from tkinter import messagebox
 
 from sentinelguard.core.alarm_manager import AlarmManager
+from sentinelguard.core.event_store import EventStore
 from sentinelguard.core.security_manager import SecurityManager
 from sentinelguard.monitors.input_monitor import InputMonitor
 from sentinelguard.monitors.power_monitor import PowerMonitor
@@ -14,13 +21,16 @@ from sentinelguard.ui.pin_window import PinWindow
 class SecurityEventRouter:
     """Onaylanan sensor olaylarini guvenlik yoneticisine ve UI'ye iletir."""
 
-    def __init__(self, security_manager, on_event):
+    def __init__(self, security_manager, on_event, on_security_event=None):
         self.security_manager = security_manager
         self.on_event = on_event
+        self.on_security_event = on_security_event
 
     def handle_event(self, event_type):
         accepted = self.security_manager.handle_event(event_type)
         if accepted:
+            if self.on_security_event is not None:
+                self.on_security_event(event_type)
             self.on_event()
         return accepted
 
@@ -37,11 +47,19 @@ class SentinelGuardApp:
         self.next_power_check = 0.0
         self.monitor_fault = False
         self.closed = False
+        self._alarm_logged = False
+
+        # Gecmis yazilamazsa güvenlik izlemesi durmamalidir.
+        try:
+            self.event_store = EventStore()
+        except Exception as error:
+            self.event_store = None
+            print(f"Olay geçmişi başlatılamadı: {error}")
 
         self.alarm_manager = AlarmManager(audio_manager)
         self.security_manager = SecurityManager(
             self.alarm_manager,
-            pin_verifier=pin_manager.verify_pin,
+            pin_verifier=self._verify_pin,
         )
         self.pin_window = PinWindow(
             root,
@@ -51,6 +69,7 @@ class SentinelGuardApp:
         self.event_router = SecurityEventRouter(
             self.security_manager,
             self.show_pin_window,
+            on_security_event=self._on_security_event,
         )
 
         self.power_monitor = PowerMonitor(self.event_router)
@@ -61,6 +80,7 @@ class SentinelGuardApp:
             root,
             on_arm=self.prepare_arm,
             on_audio_settings=self.open_audio_settings,
+            on_get_events=self.get_recent_events,
         )
         # Eski kodun ve testlerin kullanabildigi isimler.
         self.dashboard = self.main_window
@@ -69,6 +89,57 @@ class SentinelGuardApp:
 
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.tick)
+
+    # Gecmis: UI, SQLite dosyasina dogrudan dokunmaz.
+    def _log_event(self, code, category, message):
+        store = getattr(self, "event_store", None)
+        if store is None:
+            return
+        try:
+            store.add(code, category, message)
+        except Exception as error:
+            print(f"Olay kaydı yazılamadı: {error}")
+
+    def get_recent_events(self):
+        store = getattr(self, "event_store", None)
+        if store is None:
+            raise RuntimeError("Olay geçmişi kullanılamıyor.")
+        return store.recent(limit=100)
+
+    def _verify_pin(self, pin):
+        # PIN'i kesinlikle günlük kayıtlarına yazma.
+        try:
+            verified = self.pin_manager.verify_pin(pin)
+        except Exception:
+            self._log_event("PIN_ERROR", "auth", "PIN doğrulama hatası")
+            raise
+
+        self._log_event(
+            "PIN_ACCEPTED" if verified else "PIN_REJECTED",
+            "auth",
+            "Doğru PIN girildi" if verified else "Yanlış PIN denemesi",
+        )
+        return verified
+
+    def _record_alarm_start(self):
+        if getattr(self, "_alarm_logged", False):
+            return
+        alarm_manager = getattr(self, "alarm_manager", None)
+        if alarm_manager is not None and getattr(alarm_manager, "alarm_active", False):
+            self._alarm_logged = True
+            self._log_event("ALARM_STARTED", "alarm", "Siren başlatıldı")
+
+    def _on_security_event(self, event_type):
+        names = {
+            "POWER_DISCONNECTED": "Şarj adaptörü çıkarıldı",
+            "USB_CONNECTED": "USB cihazı bağlandı",
+            "USB_DISCONNECTED": "USB cihazı çıkarıldı",
+            "INPUT_DETECTED": "Klavye veya fare müdahalesi algılandı",
+            "MOTION_DETECTED": "Cihaz hareketi algılandı",
+            "PERSON_DETECTED": "Kişi algılandı",
+        }
+        self._log_event(event_type, "security", names.get(event_type, event_type))
+        self._record_alarm_start()
 
     def _audio_dialog_is_open(self):
         return (
@@ -122,6 +193,7 @@ class SentinelGuardApp:
     def activate_protection(self):
         self.arming_after_id = None
         self.monitor_fault = False
+        self._alarm_logged = False
 
         try:
             self.security_manager.arm()
@@ -129,6 +201,7 @@ class SentinelGuardApp:
             self.usb_monitor.start_session()
             self.input_monitor.start_session()
         except Exception as error:
+            self._log_event("ARM_FAILED", "system", "Koruma başlatılamadı")
             self.stop_monitors()
             try:
                 self.security_manager.disarm()
@@ -139,6 +212,7 @@ class SentinelGuardApp:
             return
 
         self.next_power_check = time.monotonic()
+        self._log_event("ARMED", "system", "Koruma etkinleştirildi")
         self.status_var.set("Koruma aktif.")
         self.root.withdraw()
 
@@ -160,14 +234,19 @@ class SentinelGuardApp:
                     self.next_power_check = time.monotonic() + 0.5
 
                 self.input_monitor.check_input()
-                self.security_manager.check_pin_timeout()
+                if self.security_manager.check_pin_timeout():
+                    self._log_event("PIN_TIMEOUT", "alarm", "PIN süresi doldu")
+                    self._record_alarm_start()
         except Exception as error:
             if not self.monitor_fault:
                 self.monitor_fault = True
                 print(f"SentinelGuard izleme hatası: {error}")
+                self._log_event("MONITOR_ERROR", "system", "Sensör izleme hatası")
                 try:
                     self.alarm_manager.start_alarm()
+                    self._record_alarm_start()
                 except Exception as alarm_error:
+                    self._log_event("ALARM_FAILED", "system", "Siren başlatılamadı")
                     print(f"Alarm başlatma hatası: {alarm_error}")
                 self.show_pin_window()
         finally:
@@ -186,6 +265,8 @@ class SentinelGuardApp:
                 print(f"Monitör kapatma hatası: {error}")
 
     def on_disarmed(self):
+        self._log_event("DISARMED", "system", "Koruma PIN ile kapatıldı")
+        self._alarm_logged = False
         self.stop_monitors()
         self.monitor_fault = False
         self.status_var.set("Koruma kapalı.")

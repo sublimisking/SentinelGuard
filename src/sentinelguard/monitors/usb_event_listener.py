@@ -1,3 +1,8 @@
+"""USB bildirimlerini Tk mesaj dongusunden ayri bir thread uzerinde dinler."""
+
+import queue
+import threading
+
 import win32con
 import win32gui
 import win32gui_struct
@@ -18,6 +23,11 @@ class USBEventListener:
             f"SentinelGuardUSBListener_{id(self)}"
         )
         self.class_registered = False
+        self._events = queue.Queue()
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._ready = threading.Event()
+        self._error = None
 
     def on_device_change(self, hwnd, msg, event, lparam):
 
@@ -54,8 +64,9 @@ class USBEventListener:
             else:
                 event_type = "USB_DISCONNECTED"
 
-            # Olayi USBMonitor'a ilet.
-            self.callback(event_type, str(device_path))
+            # Windows callback'i icinde alarm veya arayuz kodu calistirma.
+            if not self._stop_event.is_set():
+                self._events.put((event_type, str(device_path)))
 
         except Exception as error:
             print(f"USB bildirim hatasi: {error}")
@@ -63,9 +74,52 @@ class USBEventListener:
         return 1
 
     def start(self):
-        if self.hwnd is not None:
+        """Ana uygulama thread'inden cagrilir; kayit bitmeden donmez."""
+        if self._thread is not None and self._thread.is_alive():
+            if self._stop_event.is_set():
+                raise RuntimeError("USB dinleyicisi henuz durmadi.")
             return
 
+        self._clear_events()
+        self._stop_event.clear()
+        self._ready.clear()
+        self._error = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="SentinelGuardUSBListener",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(5.0):
+            self._stop_event.set()
+            raise RuntimeError("USB dinleyicisi zamaninda baslatilamadi.")
+        if self._error is not None:
+            self._thread.join(timeout=5.0)
+            raise RuntimeError("USB dinleyicisi baslatilamadi.") from self._error
+        print("USB olay dinleyicisi baslatildi.")
+
+    def _run(self):
+        try:
+            self._create_window()
+            self._ready.set()
+            while not self._stop_event.is_set():
+                # Yalnizca bu thread'in mesajlari islenir; Tk'ye dokunulmaz.
+                if win32gui.PumpWaitingMessages():
+                    if not self._stop_event.is_set():
+                        raise RuntimeError("USB mesaj dongusu beklenmedik sekilde kapandi.")
+                    break
+                self._stop_event.wait(0.01)
+        except Exception as error:
+            self._error = error
+        finally:
+            try:
+                self._destroy_window()
+            except Exception as error:
+                if self._error is None:
+                    self._error = error
+            self._ready.set()
+
+    def _create_window(self):
         window_class = win32gui.WNDCLASS()
         window_class.lpszClassName = self.class_name
 
@@ -100,18 +154,47 @@ class USBEventListener:
                 )
             )
 
-            print("USB olay dinleyicisi baslatildi.")
-
         except Exception:
-            self.stop()
+            # _run finally blogu kaynaklari ayni thread uzerinde temizler.
             raise
 
     def process_events(self):
-        if self.hwnd is not None:
-            win32gui.PumpWaitingMessages()
+        """Mevcut uygulama dongusunden cagrilir; sadece kuyrugu bosaltir."""
+        if self._stop_event.is_set():
+            return
+        if self._error is not None:
+            raise RuntimeError("USB olay dinleyicisi calismiyor.") from self._error
+        # Bir USB olay firtinasinda arayuzun kilitlenmesini onle.
+        for _ in range(100):
+            if self._stop_event.is_set():
+                break
+            try:
+                event_type, device_path = self._events.get_nowait()
+            except queue.Empty:
+                break
+            self.callback(event_type, device_path)
+
+    def _clear_events(self):
+        while True:
+            try:
+                self._events.get_nowait()
+            except queue.Empty:
+                return
 
     def stop(self):
+        """Pencereyi olusturan thread'in kaynaklari kapatmasini bekle."""
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            if thread is threading.current_thread():
+                return
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                raise RuntimeError("USB dinleyicisi zamaninda durmadi.")
+            self._thread = None
+        self._clear_events()
 
+    def _destroy_window(self):
         if self.notification_handle is not None:
             win32gui.UnregisterDeviceNotification(
                 self.notification_handle

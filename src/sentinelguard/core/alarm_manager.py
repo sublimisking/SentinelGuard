@@ -1,9 +1,19 @@
 from pathlib import Path
 import threading
+import sys
 import winsound
 
 import comtypes
 from pycaw.pycaw import AudioUtilities
+
+
+def get_alarm_sound_path():
+    """Kaynak kod ve PyInstaller paketi icin sirenin mutlak yolu."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base_path = Path(sys._MEIPASS)
+    else:
+        base_path = Path(__file__).resolve().parents[3]
+    return base_path / "assets" / "alarm.wav"
 
 
 class AlarmManager:
@@ -35,11 +45,7 @@ class AlarmManager:
 
     
     def _play_alarm(self, stop_event):
-        sound_path = (
-            Path(__file__).resolve().parents[3]
-            / "assets"
-            / "alarm.wav"
-        )
+        sound_path = get_alarm_sound_path()
 
         volume = None
         old_volume = None

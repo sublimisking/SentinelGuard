@@ -1,13 +1,17 @@
 
 #define MyAppName "SentinelGuard"
-#define MyAppVersion "0.1.0"
+; Surum release workflow'unda /DMyAppVersion=... ile verilir.
+; Elle derlerken src/sentinelguard/version.py ile ayni tutun.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0-beta"
+#endif
 #define MyAppExeName "SentinelGuard.exe"
 
 [Setup]
 AppId={{3183D1E2-9B8E-456F-A935-606D0FD0EEC1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName=SentinelGuard v0.1.0-beta
+AppVerName=SentinelGuard v{#MyAppVersion}
 AppPublisher=SentinelGuard
 
 DefaultDirName={localappdata}\Programs\SentinelGuard
@@ -17,12 +21,18 @@ PrivilegesRequired=lowest
 WizardStyle=modern
 
 OutputDir=..\release
-OutputBaseFilename=SentinelGuard-v0.1.0-beta-Setup
+OutputBaseFilename=SentinelGuard-v{#MyAppVersion}-Setup
 
 Compression=lzma2
 SolidCompression=yes
 
 UninstallDisplayIcon={app}\{#MyAppExeName}
+
+; Guncelleme ayni AppId ile eski surumun uzerine kurulur.
+; Calisan SentinelGuard'i Restart Manager ile kapat.
+CloseApplications=force
+RestartApplications=no
+UsePreviousAppDir=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -39,3 +49,9 @@ Name: "{userdesktop}\SentinelGuard"; Filename: "{app}\{#MyAppExeName}"; Tasks: d
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch SentinelGuard"; Flags: nowait postinstall skipifsilent
+; Uygulama ici guncelleme sessiz kurulum yapar; bitince uygulamayi yeniden ac.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent
+
+[InstallDelete]
+; onedir paketinden kalan eski dosyalar yeni surumle karismasin.
+Type: filesandordirs; Name: "{app}\_internal"

@@ -4,9 +4,12 @@ Arayuz (MainWindow) ve sensor / guvenlik modulleri arasindaki baglantiyi
 burada kuruyoruz. Gercek Windows kilit ekrani saglamaz.
 """
 
+import queue
+import threading
 import time
 from tkinter import messagebox
 
+from sentinelguard.core import update_manager
 from sentinelguard.core.alarm_manager import AlarmManager
 from sentinelguard.core.security_manager import SecurityManager
 from sentinelguard.monitors.input_monitor import InputMonitor
@@ -16,6 +19,10 @@ from sentinelguard.ui.audio_settings_window import AudioSettingsWindow
 from sentinelguard.ui.main_window import MainWindow
 from sentinelguard.ui.pin_window import PinWindow
 from sentinelguard.ui.pin_change_window import PinChangeWindow
+from sentinelguard.version import __version__
+
+# Acilistan kac ms sonra sessiz guncelleme kontrolu yapilacak.
+STARTUP_UPDATE_CHECK_MS = 4000
 
 
 class SecurityEventRouter:
@@ -46,6 +53,14 @@ class SentinelGuardApp:
         self.monitor_fault = False
         self.closed = False
 
+        # Guncelleme durumu. Ag islemleri arka plan thread'inde calisir,
+        # sonuclar bu kuyruk uzerinden tick() icinde UI'ye aktarilir.
+        self.update_queue = queue.Queue()
+        self.update_state = "idle"  # idle|checking|available|downloading|ready
+        self.update_manual = False
+        self.available_update = None
+        self.downloaded_installer = None
+
         self.alarm_manager = AlarmManager(audio_manager)
         self.security_manager = SecurityManager(
             self.alarm_manager,
@@ -70,6 +85,7 @@ class SentinelGuardApp:
             on_arm=self.prepare_arm,
             on_audio_settings=self.open_audio_settings,
             on_pin_change=self.open_pin_change,
+            on_update=self.on_update_button,
         )
         # Eski kodun ve testlerin kullanabildigi isimler.
         self.dashboard = self.main_window
@@ -78,6 +94,9 @@ class SentinelGuardApp:
 
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.tick)
+        root.after(
+            STARTUP_UPDATE_CHECK_MS, lambda: self.check_for_updates(manual=False)
+        )
 
     def _audio_dialog_is_open(self):
         return (
@@ -190,6 +209,11 @@ class SentinelGuardApp:
             return
 
         try:
+            self.process_update_results()
+        except Exception as error:
+            print(f"Güncelleme sonucu işlenemedi: {error}")
+
+        try:
             if self.security_manager.is_armed:
                 self.usb_monitor.process_events()
 
@@ -212,6 +236,155 @@ class SentinelGuardApp:
         finally:
             if not self.closed:
                 self.root.after(50, self.tick)
+
+    # ------------------------------------------------------------------
+    # Guncelleme
+    # ------------------------------------------------------------------
+
+    def _update_blocked_reason(self):
+        """Guncelleme kurulamiyorsa nedenini, kurulabiliyorsa None dondur."""
+        if self.closed:
+            return "Uygulama kapanıyor."
+        if self.security_manager.is_armed:
+            return "Koruma aktifken güncelleme yapılamaz."
+        if self.arming_after_id is not None:
+            return "Koruma başlatılırken güncelleme yapılamaz."
+        if self._audio_dialog_is_open() or self._pin_change_dialog_is_open():
+            return "Önce açık ayar penceresini kapatın."
+        return None
+
+    def _run_in_background(self, kind, func, *args):
+        def worker():
+            try:
+                result = func(*args)
+            except Exception as error:
+                self.update_queue.put((kind, False, error))
+            else:
+                self.update_queue.put((kind, True, result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_update_button(self):
+        if self.update_state in ("available", "ready"):
+            self.install_update()
+        else:
+            self.check_for_updates(manual=True)
+
+    def check_for_updates(self, manual=False):
+        if self.closed or self.update_state not in ("idle", "available"):
+            return
+        self.update_state = "checking"
+        self.update_manual = manual
+        self.main_window.set_update_state(
+            "Güncellemeler denetleniyor...", enabled=False
+        )
+        self._run_in_background("check", update_manager.check_for_update)
+
+    def install_update(self):
+        reason = self._update_blocked_reason()
+        if reason is not None:
+            self.main_window.set_update_state(reason, enabled=True)
+            return
+        info = self.available_update
+        if info is None:
+            return
+
+        if self.downloaded_installer is not None:
+            self._launch_downloaded_installer()
+            return
+
+        confirmed = messagebox.askyesno(
+            "Güncelleme",
+            f"SentinelGuard v{info.version} indirilip kurulacak.\n"
+            "Kurulum sırasında uygulama kapanıp yeniden açılacak.\n\n"
+            "Devam edilsin mi?",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self.update_state = "downloading"
+        self.main_window.set_update_state(
+            f"v{info.version} indiriliyor...", enabled=False
+        )
+        self._run_in_background("download", update_manager.download_update, info)
+
+    def _launch_downloaded_installer(self):
+        # Son kontrol: indirme surerken koruma acilmis olabilir.
+        reason = self._update_blocked_reason()
+        if reason is not None:
+            self.main_window.set_update_state(
+                f"Güncelleme hazır, ancak kurulmadı: {reason} "
+                "Koruma kapandıktan sonra tekrar deneyin.",
+                button_text="Şimdi Kur",
+            )
+            return
+        try:
+            update_manager.launch_installer(self.downloaded_installer)
+        except Exception as error:
+            self.downloaded_installer = None
+            self.update_state = "available"
+            self.main_window.set_update_state(
+                f"Kurulum başlatılamadı: {error}", button_text="Tekrar Dene"
+            )
+            return
+        self.close()
+
+    def process_update_results(self):
+        while True:
+            try:
+                kind, ok, payload = self.update_queue.get_nowait()
+            except queue.Empty:
+                return
+            if self.closed:
+                return
+            if kind == "check":
+                self._on_check_finished(ok, payload)
+            elif kind == "download":
+                self._on_download_finished(ok, payload)
+
+    def _on_check_finished(self, ok, payload):
+        manual = self.update_manual
+        if not ok:
+            self.update_state = "idle"
+            message = (
+                f"Güncelleme denetlenemedi: {payload}"
+                if manual else f"Yüklü sürüm: v{__version__}"
+            )
+            self.main_window.set_update_state(
+                message, button_text="Güncellemeleri Denetle"
+            )
+            return
+        if payload is None:
+            self.update_state = "idle"
+            self.main_window.set_update_state(
+                f"SentinelGuard güncel (v{__version__}).",
+                button_text="Güncellemeleri Denetle",
+            )
+            return
+
+        self.available_update = payload
+        self.update_state = "available"
+        self.main_window.set_update_state(
+            f"Yeni sürüm mevcut: v{payload.version} "
+            f"(yüklü: v{__version__}).",
+            button_text="İndir ve Kur",
+        )
+        if not self.security_manager.is_armed and self.arming_after_id is None:
+            self.status_var.set(
+                f"Yeni sürüm mevcut: v{payload.version}. Ayarlar > Güncellemeler."
+            )
+
+    def _on_download_finished(self, ok, payload):
+        if not ok:
+            self.update_state = "available"
+            self.main_window.set_update_state(
+                f"İndirme başarısız: {payload}", button_text="Tekrar Dene"
+            )
+            return
+        self.downloaded_installer = payload
+        self.update_state = "ready"
+        self._launch_downloaded_installer()
 
     def stop_monitors(self):
         for monitor in (

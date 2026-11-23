@@ -15,19 +15,28 @@ from sentinelguard.ui.theme import (
     TEXT,
     MUTED,
 )
+from sentinelguard.version import __version__
 
 SIDEBAR = "#101B2D"
 ACTIVE_NAV = "#1D3B62"
 
 
 class MainWindow(ctk.CTkFrame):
-    def __init__(self, parent, on_arm, on_audio_settings, on_pin_change=None):
+    def __init__(
+        self, parent, on_arm, on_audio_settings, on_pin_change=None,
+        on_update=None,
+    ):
         super().__init__(parent, fg_color=BACKGROUND, corner_radius=0)
 
         # Butonlar olusturulmadan once callback'leri sakla.
         self.on_arm = on_arm
         self.on_audio_settings = on_audio_settings
         self.on_pin_change = on_pin_change
+        self.on_update = on_update
+
+        # Guncelleme karti metni; app.py set_update_state ile degistirir.
+        self.update_var = ctk.StringVar(value=f"Yüklü sürüm: v{__version__}")
+        self.update_button = None
 
         # app.py bu iki alani kullanir.
         self.status_var = ctk.StringVar(value="Koruma kapalı.")
@@ -89,7 +98,7 @@ class MainWindow(ctk.CTkFrame):
 
         ctk.CTkLabel(
             sidebar,
-            text="v0.1.0-beta  •  Test sürümü",
+            text=f"v{__version__}  •  Test sürümü",
             font=ctk.CTkFont(size=11),
             text_color=MUTED,
         ).pack(side="bottom", pady=22)
@@ -189,7 +198,10 @@ class MainWindow(ctk.CTkFrame):
         self.arm_button.pack(fill="x", pady=(24, 8))
 
     def _build_settings_page(self):
-        page = ctk.CTkFrame(self.page_container, fg_color="transparent")
+        # Uc kart 900x600 sabit pencereye sigmayabilir; kaydirilabilir yap.
+        page = ctk.CTkScrollableFrame(
+            self.page_container, fg_color="transparent"
+        )
         self.pages["settings"] = page
 
         speaker_card = ctk.CTkFrame(
@@ -238,6 +250,38 @@ class MainWindow(ctk.CTkFrame):
             state="normal" if self.on_pin_change is not None else "disabled",
         )
         self.pin_change_button.pack(anchor="w", padx=24, pady=(0, 20))
+
+        update_card = ctk.CTkFrame(
+            page, fg_color=CARD, corner_radius=16,
+            border_width=1, border_color=BORDER,
+        )
+        update_card.pack(fill="x", pady=(16, 0))
+        ctk.CTkLabel(
+            update_card, text="Güncellemeler",
+            font=ctk.CTkFont(size=19, weight="bold"), text_color=TEXT,
+        ).pack(anchor="w", padx=24, pady=(24, 7))
+        ctk.CTkLabel(
+            update_card, textvariable=self.update_var,
+            font=ctk.CTkFont(size=12), text_color=MUTED,
+            wraplength=480, justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 17))
+        self.update_button = ctk.CTkButton(
+            update_card, text="Güncellemeleri Denetle", width=215, height=43,
+            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+            command=self.on_update,
+            state="normal" if self.on_update is not None else "disabled",
+        )
+        self.update_button.pack(anchor="w", padx=24, pady=(0, 20))
+
+    def set_update_state(self, message, button_text=None, enabled=True):
+        """Guncelleme kartindaki metni ve butonu guncelle."""
+        self.update_var.set(message)
+        if self.update_button is None:
+            return
+        options = {"state": "normal" if enabled else "disabled"}
+        if button_text is not None:
+            options["text"] = button_text
+        self.update_button.configure(**options)
 
     def show_page(self, page_name):
         if page_name not in self.pages:

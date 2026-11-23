@@ -1,0 +1,89 @@
+# Yeni surum yayinlama:
+#   1. src/sentinelguard/version.py icindeki __version__ degerini artir
+#   2. git commit, ardindan: git tag v<surum> && git push origin v<surum>
+# Bu workflow testleri calistirir, exe + kurulum dosyasini derler ve
+# GitHub Release olusturur. Uygulama ici guncelleme bu release'i okur.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bagimliliklari kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" pyinstaller
+
+      - name: Etiket ile surumu karsilastir
+        id: version
+        shell: pwsh
+        run: |
+          $version = python -c "from sentinelguard.version import __version__; print(__version__)"
+          $tag = "${{ github.ref_name }}"
+          if ("v$version" -ne $tag) {
+            Write-Error "Etiket ($tag) ile version.py (v$version) uyusmuyor."
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ($version -match "-") { "prerelease=true" >> $env:GITHUB_OUTPUT }
+          else { "prerelease=false" >> $env:GITHUB_OUTPUT }
+
+      - name: Testler
+        run: python -m pytest -q
+
+      - name: PyInstaller ile derle
+        run: >
+          pyinstaller --noconfirm --clean --onedir --windowed
+          --name SentinelGuard
+          --paths src
+          --collect-all customtkinter
+          --collect-submodules sentinelguard
+          --add-data "assets/Alarm.wav;assets"
+          src/sentinelguard/main.py
+
+      - name: Inno Setup ile kurulum olustur
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" installer\SentinelGuard.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: SHA-256 ozeti
+        shell: pwsh
+        run: |
+          $file = Get-Item "release\SentinelGuard-v${{ steps.version.outputs.version }}-Setup.exe"
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($file.Name)" | Out-File -Encoding ascii -NoNewline "$($file.FullName).sha256"
+          Get-Content "$($file.FullName).sha256"
+
+      - name: GitHub Release yayinla
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ghArgs = @(
+            "release", "create", "${{ github.ref_name }}",
+            "release\SentinelGuard-v${{ steps.version.outputs.version }}-Setup.exe",
+            "release\SentinelGuard-v${{ steps.version.outputs.version }}-Setup.exe.sha256",
+            "--title", "SentinelGuard ${{ github.ref_name }}",
+            "--generate-notes"
+          )
+          if ("${{ steps.version.outputs.prerelease }}" -eq "true") { $ghArgs += "--prerelease" }
+          gh @ghArgs

@@ -170,3 +170,9 @@ def test_launch_installer_runs_silent_setup(tmp_path):
     assert calls[0][0].endswith("setup.exe")
     assert "/SILENT" in calls[0]
     assert "/CLOSEAPPLICATIONS" in calls[0]
+
+
+def test_stable_install_is_not_offered_prereleases():
+    releases = [_release("v0.3.0-beta", prerelease=True), _release("v0.2.0")]
+    assert select_update(releases, current="0.1.0").version == "0.2.0"
+    assert select_update(releases, current="0.1.0-beta").version == "0.3.0-beta"

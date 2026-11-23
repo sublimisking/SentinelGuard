@@ -100,8 +100,14 @@ def _read_json(url):
         raise UpdateError(f"Guncelleme sunucusuna ulasilamadi: {error}") from error
 
 
-def select_update(releases, current=__version__, include_prereleases=True):
-    """Yayin listesinden kurulabilir en yeni guncellemeyi sec."""
+def select_update(releases, current=__version__, include_prereleases=None):
+    """Yayin listesinden kurulabilir en yeni guncellemeyi sec.
+
+    Varsayilan: kurulu surum on surumse (beta) on surumler de teklif
+    edilir; kararli bir surum kuruluysa sadece kararli surumler.
+    """
+    if include_prereleases is None:
+        include_prereleases = parse_version(current)[3][0] == 0
     best = None
     best_key = parse_version(current)
 

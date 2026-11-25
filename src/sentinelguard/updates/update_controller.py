@@ -28,8 +28,8 @@ from sentinelguard.updates.version_manager import VersionManager
 GITHUB_OWNER = "sublimisking"
 GITHUB_REPO = "SentinelGuard"
 
-# Uygulama su an beta; beta kullanicilari beta guncellemeleri alir.
-INCLUDE_PRERELEASE = True
+# Kararli surum; beta guncellemeleri kullaniciya gelmez.
+INCLUDE_PRERELEASE = False
 
 POLL_MS = 100
 

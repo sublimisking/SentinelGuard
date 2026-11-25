@@ -7,7 +7,7 @@
 AppId={{3183D1E2-9B8E-456F-A935-606D0FD0EEC1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName=SentinelGuard v0.1.0-beta
+AppVerName=SentinelGuard v0.1.0
 AppPublisher=SentinelGuard
 
 DefaultDirName={localappdata}\Programs\SentinelGuard
@@ -17,7 +17,7 @@ PrivilegesRequired=lowest
 WizardStyle=modern
 
 OutputDir=..\release
-OutputBaseFilename=SentinelGuard-v0.1.0-beta-Setup
+OutputBaseFilename=SentinelGuard-v0.1.0-Setup
 
 Compression=lzma2
 SolidCompression=yes

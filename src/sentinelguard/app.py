@@ -35,8 +35,9 @@ class SecurityEventRouter:
 class SentinelGuardApp:
     """Koruma oturumu, sensor dongusu ve pencerelerin yasam dongusu."""
 
-    def __init__(self, root, audio_manager, pin_manager):
+    def __init__(self, root, audio_manager, pin_manager, update_controller=None):
         self.root = root
+        self.update_controller = update_controller
         self.audio_manager = audio_manager
         self.pin_manager = pin_manager
         self.audio_window = None
@@ -70,6 +71,8 @@ class SentinelGuardApp:
             on_arm=self.prepare_arm,
             on_audio_settings=self.open_audio_settings,
             on_pin_change=self.open_pin_change,
+            on_check_update=self.check_updates if update_controller else None,
+            on_install_update=self.install_update if update_controller else None,
         )
         # Eski kodun ve testlerin kullanabildigi isimler.
         self.dashboard = self.main_window
@@ -78,6 +81,55 @@ class SentinelGuardApp:
 
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.tick)
+
+        if update_controller is not None:
+            update_controller.bind(
+                on_status=self.main_window.set_update_status,
+                on_available=self.main_window.set_update_available,
+            )
+            # Acilista sessizce bir kez bak.
+            root.after(3000, self.check_updates)
+
+    def _update_busy(self):
+        controller = getattr(self, "update_controller", None)
+        return controller is not None and controller.busy
+
+    def _can_install_update(self):
+        return (
+            not self.closed
+            and not self.security_manager.is_armed
+            and self.arming_after_id is None
+        )
+
+    def check_updates(self):
+        if self.update_controller is None or self.closed:
+            return
+        self.update_controller.check()
+
+    def install_update(self):
+        if self.update_controller is None or not self._can_install_update():
+            return
+        if self._audio_dialog_is_open() or self._pin_change_dialog_is_open():
+            return
+
+        release = self.update_controller.release
+        if release is None:
+            return
+
+        confirmed = messagebox.askyesno(
+            "Güncelleme",
+            f"{release.tag} indirilip kurulacak.\n"
+            "SentinelGuard kurulum sırasında kapanır ve sonra tekrar açılır.\n\n"
+            "Devam edilsin mi?",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self.update_controller.install(
+            can_launch=self._can_install_update,
+            shutdown=self.close,
+        )
 
     def _audio_dialog_is_open(self):
         return (
@@ -138,6 +190,9 @@ class SentinelGuardApp:
         if self.closed or self.security_manager.is_armed:
             return
         if self.arming_after_id is not None or self._audio_dialog_is_open():
+            return
+        if self._update_busy():
+            self.status_var.set("Güncelleme sürüyor. Bitince korumayı açın.")
             return
 
         try:

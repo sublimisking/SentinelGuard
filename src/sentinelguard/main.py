@@ -13,6 +13,7 @@ from sentinelguard.core.pin_manager import PinManager, PinStorageError
 from sentinelguard.ui.audio_settings_window import AudioSettingsWindow
 from sentinelguard.ui.pin_setup_window import PinSetupWindow
 from sentinelguard.ui.theme import BACKGROUND, center_window, configure_theme
+from sentinelguard.updates.update_controller import UpdateController
 
 
 # Mevcut testlerin ve importlarin kullanabilmesi icin bu iki fonksiyon
@@ -70,7 +71,12 @@ def main():
             return
 
         loading.destroy()
-        app = SentinelGuardApp(root, audio_manager, pin_manager)
+        app = SentinelGuardApp(
+            root,
+            audio_manager,
+            pin_manager,
+            update_controller=UpdateController.create_default(root),
+        )
 
     except (PinStorageError, OSError, RuntimeError, ValueError) as error:
         messagebox.showerror("SentinelGuard Hatası", str(error), parent=root)
@@ -84,3 +90,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

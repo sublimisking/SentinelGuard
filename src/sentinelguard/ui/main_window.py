@@ -14,20 +14,33 @@ from sentinelguard.ui.theme import (
     PRIMARY_HOVER,
     TEXT,
     MUTED,
+    SUCCESS,
 )
 
 SIDEBAR = "#101B2D"
+SUCCESS_HOVER = "#16A34A"
 ACTIVE_NAV = "#1D3B62"
 
 
 class MainWindow(ctk.CTkFrame):
-    def __init__(self, parent, on_arm, on_audio_settings, on_pin_change=None):
+    def __init__(
+        self,
+        parent,
+        on_arm,
+        on_audio_settings,
+        on_pin_change=None,
+        on_check_update=None,
+        on_install_update=None,
+    ):
         super().__init__(parent, fg_color=BACKGROUND, corner_radius=0)
 
         # Butonlar olusturulmadan once callback'leri sakla.
         self.on_arm = on_arm
         self.on_audio_settings = on_audio_settings
         self.on_pin_change = on_pin_change
+        self.on_check_update = on_check_update
+        self.on_install_update = on_install_update
+        self.update_status_var = ctk.StringVar(value="Henüz kontrol edilmedi.")
 
         # app.py bu iki alani kullanir.
         self.status_var = ctk.StringVar(value="Koruma kapalı.")
@@ -133,6 +146,15 @@ class MainWindow(ctk.CTkFrame):
         )
         hero.pack(fill="x", pady=(0, 18))
 
+        # Guncelleme varsa sag ustte yesil indirme ikonu gorunur.
+        self.update_badge = ctk.CTkButton(
+            hero, text="⬇", width=38, height=38, corner_radius=19,
+            fg_color=SUCCESS, hover_color=SUCCESS_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            command=lambda: self.show_page("settings"),
+        )
+
         ctk.CTkLabel(
             hero, text="◈", font=ctk.CTkFont(size=42, weight="bold"),
             text_color=PRIMARY,
@@ -189,7 +211,8 @@ class MainWindow(ctk.CTkFrame):
         self.arm_button.pack(fill="x", pady=(24, 8))
 
     def _build_settings_page(self):
-        page = ctk.CTkFrame(self.page_container, fg_color="transparent")
+        # Kartlar 600px pencereye sigmiyor; kaydirilabilir sayfa.
+        page = ctk.CTkScrollableFrame(self.page_container, fg_color="transparent")
         self.pages["settings"] = page
 
         speaker_card = ctk.CTkFrame(
@@ -238,6 +261,51 @@ class MainWindow(ctk.CTkFrame):
             state="normal" if self.on_pin_change is not None else "disabled",
         )
         self.pin_change_button.pack(anchor="w", padx=24, pady=(0, 20))
+
+        update_card = ctk.CTkFrame(
+            page, fg_color=CARD, corner_radius=16,
+            border_width=1, border_color=BORDER,
+        )
+        update_card.pack(fill="x", pady=(16, 0))
+        ctk.CTkLabel(
+            update_card, text="Güncellemeler",
+            font=ctk.CTkFont(size=19, weight="bold"), text_color=TEXT,
+        ).pack(anchor="w", padx=24, pady=(24, 7))
+        ctk.CTkLabel(
+            update_card, textvariable=self.update_status_var,
+            font=ctk.CTkFont(size=12), text_color=MUTED,
+        ).pack(anchor="w", padx=24, pady=(0, 17))
+
+        buttons = ctk.CTkFrame(update_card, fg_color="transparent")
+        buttons.pack(anchor="w", padx=24, pady=(0, 20))
+
+        self.check_update_button = ctk.CTkButton(
+            buttons, text="Kontrol Et", width=150, height=43,
+            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+            command=self.on_check_update,
+            state="normal" if self.on_check_update is not None else "disabled",
+        )
+        self.check_update_button.pack(side="left", padx=(0, 10))
+
+        self.install_update_button = ctk.CTkButton(
+            buttons, text="Güncelle", width=150, height=43,
+            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+            command=self.on_install_update,
+            state="disabled",
+        )
+        self.install_update_button.pack(side="left")
+
+    def set_update_status(self, text):
+        self.update_status_var.set(text)
+
+    def set_update_available(self, release):
+        self.install_update_button.configure(
+            state="normal" if release is not None else "disabled"
+        )
+        if release is not None:
+            self.update_badge.place(relx=1.0, x=-14, y=14, anchor="ne")
+        else:
+            self.update_badge.place_forget()
 
     def show_page(self, page_name):
         if page_name not in self.pages:

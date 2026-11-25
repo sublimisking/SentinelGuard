@@ -39,3 +39,5 @@ Name: "{userdesktop}\SentinelGuard"; Filename: "{app}\{#MyAppExeName}"; Tasks: d
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch SentinelGuard"; Flags: nowait postinstall skipifsilent
+; Otomatik guncelleme sessiz kurar; bitince uygulamayi tekrar ac.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent

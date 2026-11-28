@@ -21,6 +21,7 @@ class EventRecord:
     code: str
     category: str
     message: str
+    photo_path: str | None = None
 
 
 class EventStore:
@@ -56,25 +57,45 @@ class EventStore:
                         occurred_at TEXT NOT NULL,
                         code TEXT NOT NULL,
                         category TEXT NOT NULL,
-                        message TEXT NOT NULL
+                        message TEXT NOT NULL,
+                        photo_path TEXT
                     )
                     """
                 )
+                # Eski veritabanlarina fotograf sutununu ekle.
+                columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(security_events)"
+                    )
+                }
+                if "photo_path" not in columns:
+                    connection.execute(
+                        "ALTER TABLE security_events ADD COLUMN photo_path TEXT"
+                    )
 
-    def add(self, code: str, category: str, message: str) -> EventRecord:
+    def add(
+        self,
+        code: str,
+        category: str,
+        message: str,
+        photo_path: str | Path | None = None,
+    ) -> EventRecord:
         if not code or not category or not message:
             raise ValueError("Olay alanları boş bırakılamaz.")
 
         occurred_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        photo_path = str(photo_path) if photo_path else None
 
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
                     """
-                    INSERT INTO security_events (occurred_at, code, category, message)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO security_events
+                        (occurred_at, code, category, message, photo_path)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (occurred_at, code, category, message),
+                    (occurred_at, code, category, message, photo_path),
                 )
                 event_id = cursor.lastrowid
 
@@ -90,7 +111,9 @@ class EventStore:
                     (self.MAX_RECORDS,),
                 )
 
-        return EventRecord(event_id, occurred_at, code, category, message)
+        return EventRecord(
+            event_id, occurred_at, code, category, message, photo_path
+        )
 
     def recent(self, limit: int = 100) -> list[EventRecord]:
         if not 1 <= limit <= 500:
@@ -99,7 +122,7 @@ class EventStore:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
-                SELECT id, occurred_at, code, category, message
+                SELECT id, occurred_at, code, category, message, photo_path
                 FROM security_events
                 ORDER BY id DESC
                 LIMIT ?

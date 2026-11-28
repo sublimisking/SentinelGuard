@@ -5,8 +5,13 @@ callback'leri çağırır; uygulama durumu status_var üzerinden güncellenir.
 """
 
 from datetime import datetime
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox
 
 import customtkinter as ctk
+
+from sentinelguard.core.camera_capture import make_png_base64
 
 from sentinelguard.ui.theme import (
     BACKGROUND,
@@ -34,6 +39,10 @@ class MainWindow(ctk.CTkFrame):
         on_audio_settings,
         on_pin_change=None,
         on_get_events=None,
+        on_list_photos=None,
+        on_delete_photo=None,
+        on_get_camera_enabled=None,
+        on_set_camera_enabled=None,
         on_check_update=None,
         on_install_update=None,
     ):
@@ -44,6 +53,12 @@ class MainWindow(ctk.CTkFrame):
         self.on_audio_settings = on_audio_settings
         self.on_pin_change = on_pin_change
         self.on_get_events = on_get_events or (lambda: [])
+        self.on_list_photos = on_list_photos or (lambda: [])
+        self.on_delete_photo = on_delete_photo
+        self.on_get_camera_enabled = on_get_camera_enabled
+        self.on_set_camera_enabled = on_set_camera_enabled
+        # PhotoImage referanslari tutulmazsa Tk resmi siler.
+        self._photo_refs = []
         self.on_check_update = on_check_update
         self.on_install_update = on_install_update
         self.update_status_var = ctk.StringVar(value="Henüz kontrol edilmedi.")
@@ -85,6 +100,7 @@ class MainWindow(ctk.CTkFrame):
         for key, name in (
             ("home", "Ana Sayfa"),
             ("events", "Olay Geçmişi"),
+            ("photos", "Fotoğraflar"),
             ("settings", "Ayarlar"),
         ):
             button = ctk.CTkButton(
@@ -137,6 +153,7 @@ class MainWindow(ctk.CTkFrame):
 
         self._build_home_page()
         self._build_events_page()
+        self._build_photos_page()
         self._build_settings_page()
 
     def _build_home_page(self):
@@ -221,7 +238,7 @@ class MainWindow(ctk.CTkFrame):
         toolbar.pack(fill="x", pady=(0, 12))
 
         ctk.CTkLabel(
-            toolbar, text="Son 100 olay",
+            toolbar, text="Son 10 olay",
             font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT,
         ).pack(side="left")
 
@@ -245,6 +262,7 @@ class MainWindow(ctk.CTkFrame):
 
     def refresh_events(self):
         """Olay sayfasi acilinca ve Yenile'ye basilinca calisir."""
+        self._photo_refs = []
         for widget in self.events_list.winfo_children():
             widget.destroy()
 
@@ -313,6 +331,170 @@ class MainWindow(ctk.CTkFrame):
                 anchor="w", justify="left", wraplength=470,
             ).pack(fill="x", padx=14, pady=(0, 12))
 
+            photo_path = getattr(event, "photo_path", None)
+            if photo_path:
+                self._add_photo_preview(item, photo_path)
+
+    def _add_photo_preview(self, item, photo_path):
+        """Olay satirina kucuk resim ekler; tiklaninca tam boy acar."""
+        encoded = (
+            make_png_base64(photo_path, 96) if Path(photo_path).is_file() else None
+        )
+        if encoded is None:
+            ctk.CTkLabel(
+                item, text="Fotoğraf silinmiş veya açılamıyor.",
+                font=ctk.CTkFont(size=11), text_color=MUTED, anchor="w",
+            ).pack(fill="x", padx=14, pady=(0, 12))
+            return
+
+        image = tk.PhotoImage(data=encoded)
+        self._photo_refs.append(image)
+        thumb = tk.Label(
+            item, image=image, cursor="hand2", bd=0, bg=EVENT_BG,
+        )
+        thumb.pack(anchor="w", padx=14, pady=(0, 12))
+        thumb.bind("<Button-1>", lambda _e, p=photo_path: self.open_photo(p))
+
+    def open_photo(self, photo_path):
+        encoded = make_png_base64(photo_path, 800)
+        if encoded is None:
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("Alarm Fotoğrafı")
+        image = tk.PhotoImage(data=encoded)
+        label = tk.Label(window, image=image, bd=0)
+        label.image = image  # referansi pencereye bagla
+        label.pack()
+        window.after(100, window.lift)
+
+    def _build_photos_page(self):
+        page = ctk.CTkFrame(self.page_container, fg_color="transparent")
+        self.pages["photos"] = page
+
+        toolbar = ctk.CTkFrame(page, fg_color="transparent")
+        toolbar.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(
+            toolbar, text="Alarm fotoğrafları (en fazla 5)",
+            font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT,
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            toolbar, text="Yenile", width=90, height=34,
+            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+            command=self.refresh_photos,
+        ).pack(side="right")
+
+        self.photos_list = ctk.CTkScrollableFrame(
+            page, fg_color=CARD, corner_radius=14,
+            border_width=1, border_color=BORDER,
+        )
+        self.photos_list.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(
+            page,
+            text="Fotoğraflar yalnızca bu bilgisayarda saklanır.",
+            font=ctk.CTkFont(size=11), text_color=MUTED,
+        ).pack(anchor="w", pady=(10, 0))
+
+    def refresh_photos(self):
+        """Fotograflar sayfasi acilinca, Yenile'de ve silmeden sonra calisir."""
+        self._photo_page_refs = []
+        for widget in self.photos_list.winfo_children():
+            widget.destroy()
+
+        try:
+            photos = list(self.on_list_photos())
+        except Exception as error:
+            ctk.CTkLabel(
+                self.photos_list,
+                text=f"Fotoğraflar okunamadı: {error}",
+                text_color=DANGER, wraplength=470,
+            ).pack(padx=12, pady=20)
+            return
+
+        if not photos:
+            ctk.CTkLabel(
+                self.photos_list,
+                text="Henüz alarm fotoğrafı yok.",
+                text_color=MUTED,
+            ).pack(padx=12, pady=24)
+            return
+
+        for photo in photos:
+            self._add_photo_card(photo)
+
+    @staticmethod
+    def _photo_time_text(photo):
+        stem = Path(photo).stem[:19]
+        try:
+            return datetime.strptime(stem, "%Y-%m-%d_%H-%M-%S").strftime(
+                "%d.%m.%Y  %H:%M:%S"
+            )
+        except ValueError:
+            return Path(photo).name
+
+    def _add_photo_card(self, photo):
+        item = ctk.CTkFrame(
+            self.photos_list, fg_color=EVENT_BG, corner_radius=10
+        )
+        item.pack(fill="x", padx=7, pady=5)
+
+        encoded = make_png_base64(photo, 150)
+        if encoded is not None:
+            image = tk.PhotoImage(data=encoded)
+            self._photo_page_refs.append(image)
+            thumb = tk.Label(
+                item, image=image, cursor="hand2", bd=0, bg=EVENT_BG
+            )
+            thumb.bind("<Button-1>", lambda _e, p=photo: self.open_photo(p))
+        else:
+            thumb = ctk.CTkLabel(
+                item, text="Önizleme yok", text_color=MUTED, width=150
+            )
+        thumb.pack(side="left", padx=14, pady=12)
+
+        info = ctk.CTkFrame(item, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True, pady=12)
+
+        ctk.CTkLabel(
+            info, text=self._photo_time_text(photo),
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT,
+            anchor="w",
+        ).pack(fill="x")
+
+        buttons = ctk.CTkFrame(info, fg_color="transparent")
+        buttons.pack(anchor="w", pady=(10, 0))
+
+        ctk.CTkButton(
+            buttons, text="Büyüt", width=90, height=32,
+            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+            command=lambda p=photo: self.open_photo(p),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            buttons, text="Sil", width=90, height=32,
+            fg_color=DANGER, hover_color="#B91C1C",
+            command=lambda p=photo: self.delete_photo(p),
+        ).pack(side="left")
+
+    def _confirm_delete(self):
+        return messagebox.askyesno(
+            "Fotoğrafı sil",
+            "Bu fotoğraf kalıcı olarak silinsin mi?",
+            parent=self,
+        )
+
+    def delete_photo(self, photo):
+        if self.on_delete_photo is None or not self._confirm_delete():
+            return
+        try:
+            self.on_delete_photo(photo)
+        except Exception as error:
+            messagebox.showerror(
+                "Silinemedi", f"Fotoğraf silinemedi: {error}", parent=self
+            )
+        self.refresh_photos()
+
     def _build_settings_page(self):
         # Kartlar 600px pencereye sigmiyor; kaydirilabilir sayfa.
         page = ctk.CTkScrollableFrame(self.page_container, fg_color="transparent")
@@ -365,6 +547,38 @@ class MainWindow(ctk.CTkFrame):
         )
         self.pin_change_button.pack(anchor="w", padx=24, pady=(0, 20))
 
+        camera_card = ctk.CTkFrame(
+            page, fg_color=CARD, corner_radius=16,
+            border_width=1, border_color=BORDER,
+        )
+        camera_card.pack(fill="x", pady=(16, 0))
+        ctk.CTkLabel(
+            camera_card, text="Alarm Fotoğrafı",
+            font=ctk.CTkFont(size=19, weight="bold"), text_color=TEXT,
+        ).pack(anchor="w", padx=24, pady=(24, 7))
+        ctk.CTkLabel(
+            camera_card,
+            text=(
+                "Alarm çaldığında kamerayla tek fotoğraf çekilir. "
+                "En fazla 5 fotoğraf saklanır; fotoğraflar yalnızca bu "
+                "bilgisayarda kalır."
+            ),
+            font=ctk.CTkFont(size=12), text_color=MUTED,
+            wraplength=430, justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 17))
+
+        self.camera_switch = ctk.CTkSwitch(
+            camera_card, text="Alarmda kamera fotoğrafı çek",
+            text_color=TEXT, command=self._on_camera_switch,
+            state="normal" if self.on_set_camera_enabled else "disabled",
+        )
+        self.camera_switch.pack(anchor="w", padx=24, pady=(0, 24))
+        try:
+            if self.on_get_camera_enabled is None or self.on_get_camera_enabled():
+                self.camera_switch.select()
+        except Exception:
+            self.camera_switch.select()
+
         update_card = ctk.CTkFrame(
             page, fg_color=CARD, corner_radius=16,
             border_width=1, border_color=BORDER,
@@ -398,6 +612,20 @@ class MainWindow(ctk.CTkFrame):
         )
         self.install_update_button.pack(side="left")
 
+    def _on_camera_switch(self):
+        if self.on_set_camera_enabled is None:
+            return
+        try:
+            self.on_set_camera_enabled(bool(self.camera_switch.get()))
+        except Exception as error:
+            print(f"Kamera ayarı kaydedilemedi: {error}")
+            # Kayit basarisizsa anahtar gercek durumu gostersin.
+            if self.on_get_camera_enabled is not None:
+                if self.on_get_camera_enabled():
+                    self.camera_switch.select()
+                else:
+                    self.camera_switch.deselect()
+
     def set_update_status(self, text):
         self.update_status_var.set(text)
 
@@ -421,10 +649,13 @@ class MainWindow(ctk.CTkFrame):
 
         if page_name == "events":
             self.refresh_events()
+        elif page_name == "photos":
+            self.refresh_photos()
 
         titles = {
             "home": ("Ana Sayfa", "Bilgisayarınızın güvenlik kontrol merkezi"),
             "events": ("Olay Geçmişi", "Kaydedilen güvenlik ve alarm olayları"),
+            "photos": ("Fotoğraflar", "Alarm anında çekilen kamera fotoğrafları"),
             "settings": ("Ayarlar", "SentinelGuard yapılandırması"),
         }
         title, subtitle = titles[page_name]

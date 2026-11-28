@@ -4,10 +4,16 @@ Arayuz (MainWindow) ve sensor / guvenlik modulleri arasindaki baglantiyi
 burada kuruyoruz. Gercek Windows kilit ekrani saglamaz.
 """
 
+import queue
 import time
 from tkinter import messagebox
 
 from sentinelguard.core.alarm_manager import AlarmManager
+from sentinelguard.core.camera_capture import (
+    CameraCapture,
+    load_camera_enabled,
+    save_camera_enabled,
+)
 from sentinelguard.core.event_store import EventStore
 from sentinelguard.core.security_manager import SecurityManager
 from sentinelguard.monitors.input_monitor import InputMonitor
@@ -17,6 +23,10 @@ from sentinelguard.ui.audio_settings_window import AudioSettingsWindow
 from sentinelguard.ui.main_window import MainWindow
 from sentinelguard.ui.pin_window import PinWindow
 from sentinelguard.ui.pin_change_window import PinChangeWindow
+
+
+# Olay geçmişi sayfasında gösterilen olay sayısı.
+RECENT_EVENT_LIMIT = 10
 
 
 class SecurityEventRouter:
@@ -59,6 +69,14 @@ class SentinelGuardApp:
             self.event_store = None
             print(f"Olay geçmişi başlatılamadı: {error}")
 
+        # Kamera hatasi korumayi asla durdurmamali.
+        self._photo_results = queue.Queue()
+        try:
+            self.camera_capture = CameraCapture()
+        except Exception as error:
+            self.camera_capture = None
+            print(f"Kamera modülü başlatılamadı: {error}")
+
         self.alarm_manager = AlarmManager(audio_manager)
         self.security_manager = SecurityManager(
             self.alarm_manager,
@@ -85,6 +103,10 @@ class SentinelGuardApp:
             on_audio_settings=self.open_audio_settings,
             on_pin_change=self.open_pin_change,
             on_get_events=self.get_recent_events,
+            on_list_photos=self.list_photos,
+            on_delete_photo=self.delete_photo,
+            on_get_camera_enabled=self.get_camera_enabled,
+            on_set_camera_enabled=self.set_camera_enabled,
             on_check_update=self.check_updates if update_controller else None,
             on_install_update=self.install_update if update_controller else None,
         )
@@ -106,12 +128,12 @@ class SentinelGuardApp:
 
     # --- Olay gecmisi: UI SQLite dosyasina dogrudan dokunmaz. ---
 
-    def _log_event(self, code, category, message):
+    def _log_event(self, code, category, message, photo_path=None):
         store = getattr(self, "event_store", None)
         if store is None:
             return
         try:
-            store.add(code, category, message)
+            store.add(code, category, message, photo_path=photo_path)
         except Exception as error:
             print(f"Olay kaydı yazılamadı: {error}")
 
@@ -119,7 +141,65 @@ class SentinelGuardApp:
         store = getattr(self, "event_store", None)
         if store is None:
             raise RuntimeError("Olay geçmişi kullanılamıyor.")
-        return store.recent(limit=100)
+        return store.recent(limit=RECENT_EVENT_LIMIT)
+
+    # --- Alarm fotografi ---
+
+    def _settings_path(self):
+        return getattr(self.audio_manager, "settings_path", None)
+
+    def get_camera_enabled(self):
+        return load_camera_enabled(self._settings_path())
+
+    def set_camera_enabled(self, enabled):
+        save_camera_enabled(enabled, self._settings_path())
+
+    def list_photos(self):
+        camera = getattr(self, "camera_capture", None)
+        if camera is None:
+            return []
+        return camera.list_photos()
+
+    def delete_photo(self, path):
+        camera = getattr(self, "camera_capture", None)
+        if camera is None:
+            raise RuntimeError("Kamera modülü kullanılamıyor.")
+        return camera.delete_photo(path)
+
+    def _start_photo_capture(self):
+        camera = getattr(self, "camera_capture", None)
+        if camera is None:
+            return
+        try:
+            if not self.get_camera_enabled():
+                return
+            # Thread yalnizca kuyruga yazar; veritabanina ana thread yazar.
+            camera.capture_async(
+                lambda path, error: self._photo_results.put((path, error))
+            )
+        except Exception as error:
+            self._log_event("PHOTO_FAILED", "system", "Kamera başlatılamadı")
+            print(f"Kamera hatası: {error}")
+
+    def _drain_photo_results(self):
+        results = getattr(self, "_photo_results", None)
+        if results is None:
+            return
+        while True:
+            try:
+                path, error = results.get_nowait()
+            except queue.Empty:
+                return
+            if path is not None:
+                self._log_event(
+                    "PHOTO_CAPTURED", "alarm",
+                    "Kamera fotoğrafı kaydedildi", photo_path=path,
+                )
+            else:
+                self._log_event(
+                    "PHOTO_FAILED", "system",
+                    f"Fotoğraf çekilemedi: {error}",
+                )
 
     def _verify_pin(self, pin):
         # PIN degerini asla kayda yazma.
@@ -143,6 +223,7 @@ class SentinelGuardApp:
         if alarm_manager is not None and getattr(alarm_manager, "alarm_active", False):
             self._alarm_logged = True
             self._log_event("ALARM_STARTED", "alarm", "Siren başlatıldı")
+            self._start_photo_capture()
 
     def _on_security_event(self, event_type):
         names = {
@@ -320,6 +401,8 @@ class SentinelGuardApp:
     def tick(self):
         if self.closed:
             return
+
+        self._drain_photo_results()
 
         try:
             if self.security_manager.is_armed:

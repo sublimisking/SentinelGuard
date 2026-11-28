@@ -120,7 +120,7 @@ class MainWindow(ctk.CTkFrame):
 
         ctk.CTkLabel(
             sidebar,
-            text="v0.1.0",
+            text="v0.1.1",
             font=ctk.CTkFont(size=11),
             text_color=MUTED,
         ).pack(side="bottom", pady=22)

@@ -1,6 +1,7 @@
 
 import customtkinter as ctk
 
+from sentinelguard.core.pin_manager import check_pin_strength
 from sentinelguard.ui.theme import (
     BACKGROUND,
     CARD,
@@ -266,6 +267,7 @@ class PinSetupWindow(ctk.CTkToplevel):
 
         try:
 
+            check_pin_strength(pin)
             self.pin_manager.set_pin(pin)
 
         except (

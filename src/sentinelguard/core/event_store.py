@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 import sqlite3
 
 
@@ -114,6 +115,51 @@ class EventStore:
         return EventRecord(
             event_id, occurred_at, code, category, message, photo_path
         )
+
+    _REPEAT_SUFFIX = re.compile(r"^(.*) \(×(\d+)\)$")
+
+    def add_repeating(
+        self, code: str, category: str, message: str
+    ) -> EventRecord:
+        """Ayni kod art arda gelirse yeni satir acmak yerine sayar.
+
+        Ornek: "Yanlış PIN denemesi (×7)". Boylece tekrarlayan olaylar
+        gecmisteki diger kayitlari listeden itmez.
+        """
+        if not code or not category or not message:
+            raise ValueError("Olay alanları boş bırakılamaz.")
+
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT id, code, message FROM security_events
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+
+            if row is None or row[1] != code:
+                row = None
+            else:
+                match = self._REPEAT_SUFFIX.match(row[2])
+                count = int(match.group(2)) if match else 1
+                occurred_at = datetime.now().astimezone().isoformat(
+                    timespec="seconds"
+                )
+                new_message = f"{message} (×{count + 1})"
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE security_events
+                        SET occurred_at = ?, message = ?
+                        WHERE id = ?
+                        """,
+                        (occurred_at, new_message, row[0]),
+                    )
+                return EventRecord(
+                    row[0], occurred_at, code, category, new_message
+                )
+
+        return self.add(code, category, message)
 
     def recent(self, limit: int = 100) -> list[EventRecord]:
         if not 1 <= limit <= 500:

@@ -15,6 +15,7 @@ from sentinelguard.core.camera_capture import (
     save_camera_enabled,
 )
 from sentinelguard.core.event_store import EventStore
+from sentinelguard.core.pin_manager import check_pin_strength
 from sentinelguard.core.security_manager import SecurityManager
 from sentinelguard.monitors.input_monitor import InputMonitor
 from sentinelguard.monitors.power_monitor import PowerMonitor
@@ -128,12 +129,17 @@ class SentinelGuardApp:
 
     # --- Olay gecmisi: UI SQLite dosyasina dogrudan dokunmaz. ---
 
-    def _log_event(self, code, category, message, photo_path=None):
+    def _log_event(
+        self, code, category, message, photo_path=None, repeating=False
+    ):
         store = getattr(self, "event_store", None)
         if store is None:
             return
         try:
-            store.add(code, category, message, photo_path=photo_path)
+            if repeating:
+                store.add_repeating(code, category, message)
+            else:
+                store.add(code, category, message, photo_path=photo_path)
         except Exception as error:
             print(f"Olay kaydı yazılamadı: {error}")
 
@@ -209,12 +215,29 @@ class SentinelGuardApp:
             self._log_event("PIN_ERROR", "auth", "PIN doğrulama hatası")
             raise
 
+        # Art arda yanlis denemeler tek satirda sayilir; gecmisi doldurmaz.
         self._log_event(
             "PIN_ACCEPTED" if verified else "PIN_REJECTED",
             "auth",
             "Doğru PIN girildi" if verified else "Yanlış PIN denemesi",
+            repeating=not verified,
         )
         return verified
+
+    def _lock_pin_record(self):
+        lock = getattr(getattr(self, "pin_manager", None), "lock_record", None)
+        if lock is not None:
+            lock()
+
+    def _unlock_pin_record(self):
+        release = getattr(
+            getattr(self, "pin_manager", None), "unlock_record", None
+        )
+        if release is not None:
+            try:
+                release()
+            except Exception as error:
+                print(f"PIN kaydı serbest bırakılamadı: {error}")
 
     def _record_alarm_start(self):
         if getattr(self, "_alarm_logged", False):
@@ -308,6 +331,7 @@ class SentinelGuardApp:
         # Kaydetme aninda da koruma durumunu kontrol et.
         if self.closed or self.security_manager.is_armed or self.arming_after_id is not None:
             raise RuntimeError("PIN değiştirmek için korumanın kapalı olması gerekir.")
+        check_pin_strength(new_pin)
         changed = self.pin_manager.change_pin(old_pin, new_pin)
         self._log_event(
             "PIN_CHANGED" if changed else "PIN_CHANGE_FAILED",
@@ -374,12 +398,15 @@ class SentinelGuardApp:
         self._alarm_logged = False
 
         try:
+            # PIN kaydini bellege al: disk dosyasi degistirilse bile gecerli.
+            self._lock_pin_record()
             self.security_manager.arm()
             self.power_monitor.start_session()
             self.usb_monitor.start_session()
             self.input_monitor.start_session()
         except Exception as error:
             self._log_event("ARM_FAILED", "system", "Koruma başlatılamadı")
+            self._unlock_pin_record()
             self.stop_monitors()
             try:
                 self.security_manager.disarm()
@@ -446,6 +473,7 @@ class SentinelGuardApp:
 
     def on_disarmed(self):
         self._log_event("DISARMED", "system", "Koruma PIN ile kapatıldı")
+        self._unlock_pin_record()
         self._alarm_logged = False
         self.stop_monitors()
         self.monitor_fault = False

@@ -5,6 +5,10 @@ class SecurityManager:
 
     PIN_TIMEOUT_SECONDS = 10.0
 
+    # Ilk 3 yanlis denemeden sonra artan bekleme (saniye).
+    FREE_PIN_ATTEMPTS = 3
+    LOCKOUT_STEPS = (5.0, 10.0, 20.0, 40.0, 60.0)
+
     ALARM_EVENTS = frozenset({
         "POWER_DISCONNECTED",
         "USB_CONNECTED",
@@ -27,6 +31,28 @@ class SecurityManager:
         self.is_armed = False
         self.pin_deadline = None
         self.pin_timeout_triggered = False
+        self.failed_pin_attempts = 0
+        self.lockout_until = None
+
+    def lockout_remaining(self) -> float:
+        """Yanlis denemeler yuzunden kalan bekleme suresi (saniye)."""
+        if self.lockout_until is None:
+            return 0.0
+        return max(0.0, self.lockout_until - self.clock())
+
+    def _reset_pin_attempts(self):
+        self.failed_pin_attempts = 0
+        self.lockout_until = None
+
+    def _register_failed_pin(self):
+        self.failed_pin_attempts += 1
+        extra = self.failed_pin_attempts - self.FREE_PIN_ATTEMPTS
+
+        if extra > 0:
+            index = min(extra, len(self.LOCKOUT_STEPS)) - 1
+            self.lockout_until = (
+                self.clock() + self.LOCKOUT_STEPS[index]
+            )
 
     def arm(self):
 
@@ -36,6 +62,7 @@ class SecurityManager:
         self.is_armed = True
         self.pin_deadline = None
         self.pin_timeout_triggered = False
+        self._reset_pin_attempts()
 
         print("SentinelGuard koruma modu aktif.")
 
@@ -47,6 +74,7 @@ class SecurityManager:
         self.is_armed = False
         self.pin_deadline = None
         self.pin_timeout_triggered = False
+        self._reset_pin_attempts()
 
         self.alarm_manager.stop_alarm()
 
@@ -112,8 +140,14 @@ class SecurityManager:
         # Bekleme suresi dolduysa once bunu isle.
         self.check_pin_timeout()
 
+        # Bekleme suresindeyken PIN'e bakma (tahmin saldirisini yavaslat).
+        if self.lockout_remaining() > 0:
+            print("PIN denemesi gecici olarak kilitli.")
+            return False
+
         # Gercek PIN kaydiyla dogrula.
         if not self.pin_verifier(pin):
+            self._register_failed_pin()
             print("Yanlis PIN.")
             return False
 

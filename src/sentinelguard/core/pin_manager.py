@@ -12,6 +12,40 @@ class PinStorageError(RuntimeError):
     """PIN kaydi bozuk veya okunamiyor."""
 
 
+# Cok bilinen, tahmini kolay PIN'ler (dizi ve tekrar kurallarina ek).
+COMMON_PINS = frozenset({
+    "112233", "123321", "159753", "147258", "258369", "369258",
+    "789456", "456123", "654123", "102030", "121314", "112211",
+})
+
+WEAK_PIN_MESSAGE = (
+    "Bu PIN tahmin edilmesi çok kolay (ör. 123456, 111111 veya 121212). "
+    "Lütfen daha rastgele bir PIN seçin."
+)
+
+
+def check_pin_strength(pin):
+    """Yeni PIN tahmin edilmesi kolaysa ValueError firlatir.
+
+    Yalnizca PIN belirlerken kullanilir; mevcut PIN'ler dogrulanirken
+    cagrilmaz, boylece eski kullanicilar kilitlenmez.
+    """
+    if not isinstance(pin, str) or not pin.isdigit():
+        raise ValueError(WEAK_PIN_MESSAGE)
+
+    digits = [int(char) for char in pin]
+    steps = {(b - a) % 10 for a, b in zip(digits, digits[1:])}
+    length = len(pin)
+
+    repeating = any(
+        length % size == 0 and pin == pin[:size] * (length // size)
+        for size in range(1, length // 2 + 1)
+    )
+
+    if steps in ({1}, {9}) or repeating or pin in COMMON_PINS:
+        raise ValueError(WEAK_PIN_MESSAGE)
+
+
 class PinManager:
 
     DEFAULT_ITERATIONS = 600_000
@@ -37,9 +71,20 @@ class PinManager:
 
         self.path = Path(path)
         self.iterations = iterations
+        # Koruma aktifken PIN kaydi bellekte tutulur; diskteki dosya
+        # degistirilse bile dogrulama etkilenmez.
+        self._cached_record = None
 
     def has_pin(self):
         return self.path.exists()
+
+    def lock_record(self):
+        """PIN kaydini bellege alir (koruma acilirken cagrilir)."""
+        self._cached_record = self._read_record()
+
+    def unlock_record(self):
+        """Bellekteki kaydi birakir; dogrulama yeniden diskten okur."""
+        self._cached_record = None
 
     @classmethod
     def _validate_pin(cls, pin):
@@ -149,20 +194,24 @@ class PinManager:
 
         record = self._create_record(pin)
         self._write_record(record)
+        self._cached_record = None
 
     def verify_pin(self, pin):
-
-        if not self.has_pin():
-            return False
 
         try:
             self._validate_pin(pin)
         except ValueError:
             return False
 
-        iterations, salt, stored_digest = (
-            self._read_record()
-        )
+        if self._cached_record is not None:
+            iterations, salt, stored_digest = self._cached_record
+        else:
+            if not self.has_pin():
+                return False
+
+            iterations, salt, stored_digest = (
+                self._read_record()
+            )
 
         entered_digest = hashlib.pbkdf2_hmac(
             "sha256",
@@ -185,5 +234,6 @@ class PinManager:
 
         record = self._create_record(new_pin)
         self._write_record(record)
+        self._cached_record = None
 
         return True

@@ -203,7 +203,30 @@ class PinWindow:
                 self.on_disarmed()
 
         else:
-            self.feedback_var.set("Yanlış PIN.")
+            wait = self._lockout_seconds()
+
+            if wait > 0:
+                self.feedback_var.set(
+                    "Çok fazla yanlış deneme. "
+                    f"{wait} saniye sonra tekrar deneyin."
+                )
+            else:
+                self.feedback_var.set("Yanlış PIN.")
+
+    def _lockout_seconds(self):
+        remaining = getattr(
+            self.security_manager, "lockout_remaining", None
+        )
+
+        if remaining is None:
+            return 0
+
+        value = remaining()
+
+        if not isinstance(value, (int, float)) or value <= 0:
+            return 0
+
+        return math.ceil(value)
 
     def hide(self):
 

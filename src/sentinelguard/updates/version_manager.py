@@ -9,7 +9,7 @@ from sentinelguard.updates.update_checker import (
 
 
 # Paket metadata yoksa (or. PyInstaller exe) bu kullanilir.
-FALLBACK_VERSION = "0.1.1"
+FALLBACK_VERSION = "0.1.2"
 
 _PATTERN = re.compile(
     r"^v?(\d+)\.(\d+)\.(\d+)"

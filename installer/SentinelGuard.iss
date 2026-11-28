@@ -1,13 +1,13 @@
 
 #define MyAppName "SentinelGuard"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2"
 #define MyAppExeName "SentinelGuard.exe"
 
 [Setup]
 AppId={{3183D1E2-9B8E-456F-A935-606D0FD0EEC1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName=SentinelGuard v0.1.1
+AppVerName=SentinelGuard v0.1.2
 AppPublisher=SentinelGuard
 
 DefaultDirName={localappdata}\Programs\SentinelGuard
@@ -17,7 +17,7 @@ PrivilegesRequired=lowest
 WizardStyle=modern
 
 OutputDir=..\release
-OutputBaseFilename=SentinelGuard-v0.1.1-Setup
+OutputBaseFilename=SentinelGuard-v0.1.2-Setup
 
 Compression=lzma2
 SolidCompression=yes
